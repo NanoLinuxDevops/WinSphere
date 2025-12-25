@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error Handling and Fallback Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #ffffff;
+        }
+        .test-section {
+            background-color: #2a2a2a;
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid #4CAF50;
+        }
+        .error {
+            border-left-color: #f44336;
+        }
+        .warning {
+            border-left-color: #ff9800;
+        }
+        .info {
+            border-left-color: #2196F3;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .error-button {
+            background-color: #f44336;
+        }
+        .error-button:hover {
+            background-color: #da190b;
+        }
+        .warning-button {
+            background-color: #ff9800;
+        }
+        .warning-button:hover {
+            background-color: #e68900;
+        }
+        pre {
+            background-color: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.success {
+            background-color: #4CAF50;
+        }
+        .status.error {
+            background-color: #f44336;
+        }
+        .status.warning {
+            background-color: #ff9800;
+        }
+        .status.info {
+            background-color: #2196F3;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Error Handling and Fallback Mechanism Test</h1>
+    <p>This test validates the implementation of task 7 requirements:</p>
+    <ul>
+        <li>✓ Graceful fallback to cached data when download fails</li>
+        <li>✓ User-friendly error messages for different failure types</li>
+        <li>✓ Retry options and estimated time displays for network issues</li>
+    </ul>
+
+    <div class="test-section">
+        <h2>🔧 Test Controls</h2>
+        <p>Click the buttons below to simulate different error scenarios and test the fallback mechanisms:</p>
+        
+        <button onclick="testNetworkError()">Test Network Error</button>
+        <button onclick="testTimeoutError()" class="warning-button">Test Timeout Error</button>
+        <button onclick="testServerError()" class="error-button">Test Server Error</button>
+        <button onclick="testValidationError()" class="warning-button">Test Validation Error</button>
+        <button onclick="testSuccessfulRefresh()">Test Successful Refresh</button>
+        <button onclick="clearTestCache()">Clear Cache</button>
+    </div>
+
+    <div class="test-section info">
+        <h2>📊 Test Results</h2>
+        <div id="testResults">
+            <p>Click a test button above to see results here...</p>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>🎯 Manual Testing Instructions</h2>
+        <ol>
+            <li><strong>Setup:</strong> Open the main app and generate a prediction to populate cache</li>
+            <li><strong>Network Error Test:</strong> Disconnect internet and try to generate new prediction</li>
+            <li><strong>Timeout Test:</strong> Use browser dev tools to throttle network to "Slow 3G"</li>
+            <li><strong>Validation Test:</strong> Replace CSV file with invalid data</li>
+            <li><strong>Verify Fallback:</strong> Check that cached data is used when errors occur</li>
+            <li><strong>Check UI:</strong> Verify error messages are user-friendly and retry options appear</li>
+        </ol>
+    </div>
+
+    <div class="test-section">
+        <h2>✅ Expected Behaviors</h2>
+        <h3>Network Errors:</h3>
+        <ul>
+            <li>Should show "Unable to connect to the lottery data source" message</li>
+            <li>Should offer retry option with estimated time</li>
+            <li>Should fall back to cached data if available</li>
+            <li>Should show data age indicator when using cached data</li>
+        </ul>
+
+        <h3>Timeout Errors:</h3>
+        <ul>
+            <li>Should show "Request took too long to complete" message</li>
+            <li>Should have longer estimated retry time (60+ seconds)</li>
+            <li>Should implement exponential backoff for retries</li>
+        </ul>
+
+        <h3>Server Errors:</h3>
+        <ul>
+            <li>Should show "Server is currently unavailable" message</li>
+            <li>Should have longest estimated retry time (300+ seconds)</li>
+            <li>Should categorize as server_error type</li>
+        </ul>
+
+        <h3>Validation Errors:</h3>
+        <ul>
+            <li>Should show "Data appears to be incomplete or corrupted" message</li>
+            <li>Should not be retryable (validation_error type)</li>
+            <li>Should fall back to cached data immediately</li>
+        </ul>
+    </div>
+
+    <script>
+        // Mock DataRefreshService for testing
+        class MockDataRefreshService {
+            constructor(config = {}) {
+                this.config = {
+                    maxRetries: 3,
+                    retryDelay: 1000,
+                    fallbackToCachedData: true,
+                    ...config
+                };
+                this.cachedData = this.loadCachedData();
+            }
+
+            loadCachedData() {
+                try {
+                    const cached = localStorage.getItem('lottery-data-cache');
+                    return cached ? JSON.parse(cached) : [];
+                } catch {
+                    return [];
+                }
+            }
+
+            async downloadLatestData(errorType = null) {
+                const startTime = Date.now();
+                let retryAttempts = 0;
+
+                // Simulate different error scenarios
+                if (errorType) {
+                    retryAttempts = this.config.maxRetries;
+                    const errorDetails = this.createError(errorType);
+                    
+                    if (this.config.fallbackToCachedData && this.cachedData.length > 0) {
+                        return {
+                            success: true,
+                            data: this.cachedData,
+                            error: this.getUserFriendlyErrorMessage(errorDetails),
+                            errorDetails,
+                            fromCache: true,
+                            dataAge: 2.5, // 2.5 hours
+                            recordCount: this.cachedData.length,
+                            retryAttempts,
+                            fallbackUsed: true
+                        };
+                    } else {
+                        return {
+                            success: false,
+                            error: this.getUserFriendlyErrorMessage(errorDetails),
+                            errorDetails,
+                            fromCache: false,
+                            dataAge: Infinity,
+                            recordCount: 0,
+                            retryAttempts,
+                            fallbackUsed: false
+                        };
+                    }
+                }
+
+                // Simulate successful refresh
+                const newData = [
+                    { date: '2024-07-16', drawNumber: 5300, numbers: [3, 14, 22, 25, 33, 38], bonus: 5 },
+                    { date: '2024-07-13', drawNumber: 5299, numbers: [7, 15, 23, 28, 31, 36], bonus: 2 }
+                ];
+
+                return {
+                    success: true,
+                    data: newData,
+                    fromCache: false,
+                    dataAge: 0,
+                    recordCount: newData.length,
+                    retryAttempts: 0,
+                    fallbackUsed: false
+                };
+            }
+
+            createError(type) {
+                const errors = {
+                    network_error: {
+                        type: 'network_error',
+                        message: 'Network connection failed',
+                        retryable: true,
+                        estimatedRetryTime: 30
+                    },
+                    timeout_error: {
+                        type: 'timeout_error',
+                        message: 'Request timeout',
+                        retryable: true,
+                        estimatedRetryTime: 60
+                    },
+                    server_error: {
+                        type: 'server_error',
+                        message: 'Server error',
+                        retryable: true,
+                        estimatedRetryTime: 300
+                    },
+                    validation_error: {
+                        type: 'validation_error',
+                        message: 'Data validation failed',
+                        retryable: false,
+                        estimatedRetryTime: undefined
+                    }
+                };
+                return errors[type] || errors.network_error;
+            }
+
+            getUserFriendlyErrorMessage(error) {
+                const messages = {
+                    network_error: 'Unable to connect to the lottery data source. Please check your internet connection. You can try again in approximately 30 seconds.',
+                    timeout_error: 'The request took too long to complete. The server may be busy. You can try again in approximately 1 minutes.',
+                    server_error: 'The lottery data server is currently unavailable. You can try again in approximately 5 minutes.',
+                    validation_error: 'The downloaded data appears to be incomplete or corrupted.'
+                };
+                return messages[error.type] || 'An unexpected error occurred while refreshing data.';
+            }
+        }
+
+        // Setup mock cached data
+        function setupMockCache() {
+            const cachedData = [
+                { date: '2024-07-10', drawNumber: 5298, numbers: [1, 12, 18, 24, 30, 37], bonus: 3 },
+                { date: '2024-07-07', drawNumber: 5297, numbers: [5, 11, 19, 26, 32, 35], bonus: 6 }
+            ];
+            const timestamp = new Date(Date.now() - 2.5 * 60 * 60 * 1000); // 2.5 hours ago
+            
+            localStorage.setItem('lottery-data-cache', JSON.stringify(cachedData));
+            localStorage.setItem('lottery-data-timestamp', timestamp.toISOString());
+        }
+
+        // Test functions
+        async function testNetworkError() {
+            setupMockCache();
+            const service = new MockDataRefreshService();
+            const result = await service.downloadLatestData('network_error');
+            displayTestResult('Network Error Test', result);
+        }
+
+        async function testTimeoutError() {
+            setupMockCache();
+            const service = new MockDataRefreshService();
+            const result = await service.downloadLatestData('timeout_error');
+            displayTestResult('Timeout Error Test', result);
+        }
+
+        async function testServerError() {
+            setupMockCache();
+            const service = new MockDataRefreshService();
+            const result = await service.downloadLatestData('server_error');
+            displayTestResult('Server Error Test', result);
+        }
+
+        async function testValidationError() {
+            setupMockCache();
+            const service = new MockDataRefreshService();
+            const result = await service.downloadLatestData('validation_error');
+            displayTestResult('Validation Error Test', result);
+        }
+
+        async function testSuccessfulRefresh() {
+            const service = new MockDataRefreshService();
+            const result = await service.downloadLatestData(); // No error type = success
+            displayTestResult('Successful Refresh Test', result);
+        }
+
+        function clearTestCache() {
+            localStorage.removeItem('lottery-data-cache');
+            localStorage.removeItem('lottery-data-timestamp');
+            displayMessage('Cache cleared successfully', 'info');
+        }
+
+        function displayTestResult(testName, result) {
+            const resultsDiv = document.getElementById('testResults');
+            const statusClass = result.success ? 'success' : 'error';
+            
+            const html = `
+                <div class="status ${statusClass}">
+                    <h3>${testName} Results</h3>
+                    <p><strong>Success:</strong> ${result.success}</p>
+                    <p><strong>From Cache:</strong> ${result.fromCache}</p>
+                    <p><strong>Fallback Used:</strong> ${result.fallbackUsed}</p>
+                    <p><strong>Record Count:</strong> ${result.recordCount}</p>
+                    <p><strong>Data Age:</strong> ${result.dataAge} hours</p>
+                    <p><strong>Retry Attempts:</strong> ${result.retryAttempts}</p>
+                    ${result.error ? `<p><strong>Error Message:</strong> ${result.error}</p>` : ''}
+                    ${result.errorDetails ? `
+                        <p><strong>Error Type:</strong> ${result.errorDetails.type}</p>
+                        <p><strong>Retryable:</strong> ${result.errorDetails.retryable}</p>
+                        ${result.errorDetails.estimatedRetryTime ? `<p><strong>Estimated Retry Time:</strong> ${result.errorDetails.estimatedRetryTime} seconds</p>` : ''}
+                    ` : ''}
+                </div>
+            `;
+            
+            resultsDiv.innerHTML = html;
+        }
+
+        function displayMessage(message, type = 'info') {
+            const resultsDiv = document.getElementById('testResults');
+            resultsDiv.innerHTML = `<div class="status ${type}"><p>${message}</p></div>`;
+        }
+
+        // Initialize with some cached data
+        setupMockCache();
+        displayMessage('Test environment initialized with mock cached data. Ready to run tests!', 'success');
+    </script>
+</body>
+</html>

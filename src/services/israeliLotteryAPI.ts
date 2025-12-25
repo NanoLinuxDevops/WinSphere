@@ -11,6 +11,8 @@ export class IsraeliLotteryAPI {
   private static readonly PAIS_BASE_URL = 'https://www.pais.co.il';
   private static readonly LOTTO_ARCHIVE_URL = 'https://www.pais.co.il/lotto/archive.aspx';
   private static readonly CSV_DOWNLOAD_URL = 'https://www.pais.co.il/lotto/archive.aspx#';
+  private static readonly MAX_RETRIES = 3;
+  private static readonly RETRY_DELAY = 1000; // 1 second base delay
 
   // Method 1: Fetch from Pais.co.il official archive
   static async fetchPaisArchive(limit: number = 100): Promise<IsraeliLotteryResult[]> {
@@ -177,6 +179,186 @@ export class IsraeliLotteryAPI {
     // const data = await page.evaluate(() => { /* scraping logic */ });
 
     return results;
+  }
+
+  // NEW: Download latest CSV data from Pais.co.il with retry logic
+  static async downloadLatestCSV(): Promise<string> {
+    console.log('Downloading latest CSV data from Pais.co.il...');
+    
+    // Try multiple potential CSV download URLs
+    const csvUrls = [
+      'https://www.pais.co.il/lotto/archive.aspx?download=csv',
+      'https://www.pais.co.il/lotto/results.csv',
+      'https://www.pais.co.il/lottery/data/lotto.csv',
+      this.CSV_DOWNLOAD_URL
+    ];
+
+    for (const url of csvUrls) {
+      try {
+        const response = await this.fetchWithRetry(url, this.MAX_RETRIES);
+        const csvContent = await response.text();
+        
+        // Validate that we got CSV content, not HTML error page
+        if (this.validateCSVStructure(csvContent)) {
+          console.log(`✅ Successfully downloaded CSV from: ${url}`);
+          return csvContent;
+        } else {
+          console.warn(`❌ Invalid CSV structure from: ${url}`);
+        }
+      } catch (error) {
+        console.warn(`Failed to download from ${url}:`, error);
+        continue;
+      }
+    }
+
+    // If all URLs fail, throw error
+    throw new Error('Failed to download CSV data from all available Pais.co.il endpoints');
+  }
+
+  // NEW: Robust network request with exponential backoff retry
+  static async fetchWithRetry(url: string, maxRetries: number = this.MAX_RETRIES): Promise<Response> {
+    let lastError: Error;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`Attempting to fetch ${url} (attempt ${attempt + 1}/${maxRetries + 1})`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Accept': 'text/csv,text/plain,application/csv,*/*',
+            'User-Agent': 'Mozilla/5.0 (compatible; LotteryPredictor/1.0)',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          },
+          mode: 'cors',
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        console.log(`✅ Successfully fetched ${url} on attempt ${attempt + 1}`);
+        return response;
+
+      } catch (error) {
+        lastError = error as Error;
+        console.warn(`Attempt ${attempt + 1} failed for ${url}:`, error);
+
+        // Don't retry on the last attempt
+        if (attempt < maxRetries) {
+          // Exponential backoff: 1s, 2s, 4s, etc.
+          const delay = this.RETRY_DELAY * Math.pow(2, attempt);
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    throw new Error(`Failed to fetch ${url} after ${maxRetries + 1} attempts. Last error: ${lastError.message}`);
+  }
+
+  // NEW: Validate CSV structure and content quality
+  static validateCSVStructure(csvContent: string): boolean {
+    try {
+      if (!csvContent || csvContent.trim().length === 0) {
+        console.error('CSV validation failed: Empty content');
+        return false;
+      }
+
+      // Check if content looks like HTML (error page)
+      if (csvContent.includes('<!DOCTYPE html') || csvContent.includes('<html')) {
+        console.error('CSV validation failed: Received HTML instead of CSV');
+        return false;
+      }
+
+      const lines = csvContent.split('\n').filter(line => line.trim().length > 0);
+      
+      if (lines.length < 2) {
+        console.error('CSV validation failed: Less than 2 lines (need header + data)');
+        return false;
+      }
+
+      // Check header row for expected columns
+      const header = lines[0].toLowerCase();
+      const requiredColumns = ['draw', 'date', 'num1', 'num2', 'num3', 'num4', 'num5', 'num6', 'bonus'];
+      const hasRequiredColumns = requiredColumns.some(col => 
+        header.includes(col) || header.includes(col.replace('num', ''))
+      );
+
+      if (!hasRequiredColumns) {
+        console.error('CSV validation failed: Missing required columns in header');
+        return false;
+      }
+
+      // Validate at least one data row
+      let validDataRows = 0;
+      for (let i = 1; i < Math.min(lines.length, 6); i++) { // Check first 5 data rows
+        const line = lines[i].trim();
+        if (line.length === 0) continue;
+
+        const columns = line.split(',');
+        if (columns.length < 9) {
+          console.warn(`CSV validation warning: Row ${i} has only ${columns.length} columns`);
+          continue;
+        }
+
+        // Validate draw number (should be numeric)
+        const drawNumber = parseInt(columns[0]);
+        if (isNaN(drawNumber) || drawNumber <= 0) {
+          console.warn(`CSV validation warning: Invalid draw number in row ${i}: ${columns[0]}`);
+          continue;
+        }
+
+        // Validate date format (should contain date-like pattern)
+        const dateStr = columns[1];
+        if (!dateStr || (!dateStr.includes('/') && !dateStr.includes('-') && !dateStr.includes('.'))) {
+          console.warn(`CSV validation warning: Invalid date format in row ${i}: ${dateStr}`);
+          continue;
+        }
+
+        // Validate main numbers (columns 2-7, should be 1-37)
+        let validNumbers = 0;
+        for (let j = 2; j <= 7; j++) {
+          const num = parseInt(columns[j]);
+          if (!isNaN(num) && num >= 1 && num <= 37) {
+            validNumbers++;
+          }
+        }
+
+        if (validNumbers < 6) {
+          console.warn(`CSV validation warning: Row ${i} has only ${validNumbers} valid main numbers`);
+          continue;
+        }
+
+        // Validate bonus number (should be 1-7)
+        const bonus = parseInt(columns[8]);
+        if (isNaN(bonus) || bonus < 1 || bonus > 7) {
+          console.warn(`CSV validation warning: Invalid bonus number in row ${i}: ${columns[8]}`);
+          continue;
+        }
+
+        validDataRows++;
+      }
+
+      if (validDataRows === 0) {
+        console.error('CSV validation failed: No valid data rows found');
+        return false;
+      }
+
+      console.log(`✅ CSV validation passed: ${validDataRows} valid data rows found`);
+      return true;
+
+    } catch (error) {
+      console.error('CSV validation failed with exception:', error);
+      return false;
+    }
   }
 
   private static parsePaisHTML(html: string, limit: number): IsraeliLotteryResult[] {
