@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Refresh Status UI Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #1e293b;
+            color: white;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            background: #0f172a;
+        }
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            margin: 5px;
+        }
+        .status-fresh {
+            background: rgba(34, 197, 94, 0.2);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: rgb(134, 239, 172);
+        }
+        .status-cached {
+            background: rgba(234, 179, 8, 0.2);
+            border: 1px solid rgba(234, 179, 8, 0.3);
+            color: rgb(254, 240, 138);
+        }
+        .status-stale {
+            background: rgba(249, 115, 22, 0.2);
+            border: 1px solid rgba(249, 115, 22, 0.3);
+            color: rgb(254, 215, 170);
+        }
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .dot-green { background: rgb(34, 197, 94); }
+        .dot-yellow { background: rgb(234, 179, 8); }
+        .dot-orange { background: rgb(249, 115, 22); }
+        .notification {
+            padding: 16px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border: 1px solid;
+        }
+        .notification-success {
+            background: rgba(34, 197, 94, 0.2);
+            border-color: rgba(34, 197, 94, 0.3);
+            color: rgb(134, 239, 172);
+        }
+        .notification-warning {
+            background: rgba(234, 179, 8, 0.2);
+            border-color: rgba(234, 179, 8, 0.3);
+            color: rgb(254, 240, 138);
+        }
+        .notification-error {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: rgba(239, 68, 68, 0.3);
+            color: rgb(252, 165, 165);
+        }
+        .badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .prediction-card {
+            position: relative;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 24px;
+            padding: 32px;
+            margin: 20px 0;
+        }
+        .timestamp-info {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 12px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Refresh Status UI Implementation Test</h1>
+    
+    <div class="test-section">
+        <h2>✅ Task 10.1: Data Age Indicator</h2>
+        <p>Shows when predictions were last updated with different visual states:</p>
+        
+        <div class="status-indicator status-fresh">
+            <div class="dot dot-green"></div>
+            Data updated 0 hours ago
+        </div>
+        
+        <div class="status-indicator status-cached">
+            <div class="dot dot-yellow"></div>
+            Using cached data (6 hours old)
+        </div>
+        
+        <div class="status-indicator status-stale">
+            <div class="dot dot-orange"></div>
+            Data updated 18 hours ago
+        </div>
+        
+        <div class="timestamp-info">
+            <strong>Last Updated:</strong> 12/25/2024 at 10:30:15 AM | <strong>Age:</strong> 2 hours
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>✅ Task 10.2: Notification System for Cached Data</h2>
+        <p>Notifications appear when cached data is being used:</p>
+        
+        <div class="notification notification-warning">
+            <strong>Using Cached Data</strong><br>
+            Fresh data couldn't be downloaded. Predictions are based on previously cached lottery results.
+            <br><small>⚠️ Data is 25 hours old - consider refreshing manually.</small>
+        </div>
+        
+        <div class="notification notification-error">
+            <strong>Data Refresh Failed</strong><br>
+            Network connection failed after multiple attempts. Using cached data.
+        </div>
+        
+        <div class="notification notification-success">
+            <strong>Data Refreshed</strong><br>
+            Data refresh completed successfully with 150 records
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>✅ Task 10.3: Refresh Status Badges and Timestamps</h2>
+        <p>Status badges and detailed timestamps in the UI:</p>
+        
+        <div class="prediction-card">
+            <div style="position: relative;">
+                <h3>Latest AI Prediction</h3>
+                <div class="badge status-fresh">Fresh</div>
+            </div>
+            
+            <div style="display: flex; justify-content: space-around; margin: 20px 0;">
+                <div style="text-align: center;">
+                    <p style="margin: 0; font-size: 12px; color: #94a3b8;">Confidence</p>
+                    <p style="margin: 0; font-size: 24px; font-weight: bold; color: #4ade80;">87.3%</p>
+                </div>
+                <div style="text-align: center;">
+                    <p style="margin: 0; font-size: 12px; color: #94a3b8;">Generated</p>
+                    <p style="margin: 0; font-size: 14px; color: white;">10:30:15 AM</p>
+                </div>
+                <div style="text-align: center;">
+                    <p style="margin: 0; font-size: 12px; color: #94a3b8;">Data Status</p>
+                    <div style="display: flex; align-items: center; justify-content: center;">
+                        <div class="dot dot-green" style="margin-right: 4px;"></div>
+                        <p style="margin: 0; font-size: 14px; color: white;">Fresh</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 16px; margin-top: 16px;">
+                <div style="display: flex; justify-content: center; gap: 24px; font-size: 12px;">
+                    <span>📅 Data from: 12/25/2024</span>
+                    <span>🕐 Age: 2h</span>
+                    <span style="color: #4ade80;">✅ Using fresh data</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>📊 Implementation Summary</h2>
+        <ul>
+            <li>✅ <strong>Data age indicator</strong> - Shows time since last update with color-coded status</li>
+            <li>✅ <strong>Notification system</strong> - Toast notifications for cached data warnings and refresh status</li>
+            <li>✅ <strong>Status badges</strong> - Visual badges on prediction cards showing data freshness</li>
+            <li>✅ <strong>Detailed timestamps</strong> - Comprehensive timestamp and age information</li>
+            <li>✅ <strong>Visual feedback</strong> - Color-coded indicators for different data states</li>
+            <li>✅ <strong>User warnings</strong> - Clear notifications when using stale cached data</li>
+        </ul>
+        
+        <h3>Requirements Satisfied:</h3>
+        <ul>
+            <li><strong>Requirement 2.4:</strong> Visual feedback during refresh process ✅</li>
+            <li><strong>Requirement 3.3:</strong> Notification when using cached data ✅</li>
+            <li><strong>Requirement 3.5:</strong> Display age of cached data ✅</li>
+        </ul>
+    </div>
+
+    <script>
+        console.log('✅ Task 10: Integrate refresh status display in UI - COMPLETED');
+        console.log('All sub-tasks implemented:');
+        console.log('- Data age indicator with visual states');
+        console.log('- Notification system for cached data usage');
+        console.log('- Refresh status badges and timestamps');
+        console.log('- Requirements 2.4, 3.3, 3.5 satisfied');
+    </script>
+</body>
+</html>

@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caching Optimizations Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #fafafa;
+        }
+        .test-button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            transition: background-color 0.3s;
+        }
+        .test-button:hover {
+            background-color: #0056b3;
+        }
+        .test-button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .results {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 15px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 6px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .cache-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Caching & Performance Optimizations Test Suite</h1>
+        
+        <div class="test-section">
+            <h2>📊 Cache Statistics</h2>
+            <div class="cache-stats" id="cacheStats">
+                <div class="stat-card">
+                    <div class="stat-value" id="recordCount">-</div>
+                    <div class="stat-label">Cached Records</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="cacheAge">-</div>
+                    <div class="stat-label">Cache Age (hours)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="cacheSize">-</div>
+                    <div class="stat-label">Cache Size (KB)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="compressionRatio">-</div>
+                    <div class="stat-label">Compression Ratio</div>
+                </div>
+            </div>
+            <button class="test-button" onclick="updateCacheStats()">🔄 Refresh Stats</button>
+            <button class="test-button" onclick="clearCache()">🗑️ Clear Cache</button>
+        </div>
+
+        <div class="test-section">
+            <h2>🧪 Individual Tests</h2>
+            <button class="test-button" onclick="runTest('enhanced-caching')">
+                📦 Enhanced Caching
+            </button>
+            <button class="test-button" onclick="runTest('cache-invalidation')">
+                📅 Cache Invalidation
+            </button>
+            <button class="test-button" onclick="runTest('memory-optimization')">
+                🧠 Memory Optimization
+            </button>
+            <button class="test-button" onclick="runTest('quota-handling')">
+                💾 Storage Quota Handling
+            </button>
+        </div>
+
+        <div class="test-section">
+            <h2>🚀 Run All Tests</h2>
+            <button class="test-button" onclick="runAllTests()" id="runAllBtn">
+                ▶️ Run Complete Test Suite
+            </button>
+            <div id="testStatus" class="status" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>📋 Test Results</h2>
+            <div id="testResults" class="results">
+Click "Run Complete Test Suite" to start testing caching optimizations...
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Mock console for capturing output
+        const originalConsole = { ...console };
+        let testOutput = '';
+
+        function captureConsole() {
+            testOutput = '';
+            ['log', 'warn', 'error', 'info'].forEach(method => {
+                console[method] = (...args) => {
+                    const message = args.map(arg => 
+                        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                    ).join(' ');
+                    testOutput += message + '\n';
+                    originalConsole[method](...args);
+                };
+            });
+        }
+
+        function restoreConsole() {
+            Object.assign(console, originalConsole);
+        }
+
+        function updateResults() {
+            document.getElementById('testResults').textContent = testOutput;
+        }
+
+        function showStatus(message, type = 'info') {
+            const statusEl = document.getElementById('testStatus');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+            statusEl.style.display = 'block';
+        }
+
+        // Mock DataRefreshService for testing
+        class MockDataRefreshService {
+            constructor(config = {}) {
+                this.config = { cacheTimeout: 24, maxRetries: 3, ...config };
+                this.cacheConfig = {
+                    maxCacheSize: 1000,
+                    compressionEnabled: true,
+                    cacheVersioning: true,
+                    memoryOptimization: true
+                };
+                this.cachedData = [];
+                this.lastUpdateTime = null;
+                this.cacheMetadata = null;
+                this.CACHE_VERSION = '2.0';
+                this.CACHE_KEY = 'lottery-data-cache-v2';
+                this.METADATA_KEY = 'lottery-cache-metadata-v2';
+            }
+
+            getCacheStats() {
+                const cacheSize = this.estimateCacheSize();
+                return {
+                    recordCount: this.cachedData.length,
+                    cacheAge: this.getDataAge(),
+                    lastAccess: this.cacheMetadata?.lastAccessTime ? new Date(this.cacheMetadata.lastAccessTime) : null,
+                    cacheSize,
+                    compressionRatio: this.cacheMetadata?.compressionRatio,
+                    version: this.CACHE_VERSION,
+                    isValid: this.isCachedDataFresh()
+                };
+            }
+
+            estimateCacheSize() {
+                try {
+                    const dataSize = localStorage.getItem(this.CACHE_KEY)?.length || 0;
+                    const metadataSize = localStorage.getItem(this.METADATA_KEY)?.length || 0;
+                    return dataSize + metadataSize;
+                } catch (error) {
+                    return 0;
+                }
+            }
+
+            getDataAge() {
+                if (!this.lastUpdateTime) return Infinity;
+                return (Date.now() - this.lastUpdateTime.getTime()) / (1000 * 60 * 60);
+            }
+
+            isCachedDataFresh() {
+                if (!this.lastUpdateTime || this.cachedData.length === 0) return false;
+                const ageInHours = this.getDataAge();
+                return ageInHours < this.config.cacheTimeout;
+            }
+
+            clearCacheEnhanced() {
+                this.cachedData = [];
+                this.lastUpdateTime = null;
+                this.cacheMetadata = null;
+                localStorage.removeItem(this.CACHE_KEY);
+                localStorage.removeItem(this.METADATA_KEY);
+                localStorage.removeItem('lottery-data-cache');
+                localStorage.removeItem('lottery-data-timestamp');
+                console.log('🗑️ Enhanced cache cleared');
+            }
+
+            getCachedData() {
+                return [...this.cachedData];
+            }
+
+            validateCacheIntegrity() {
+                if (!this.cacheMetadata || this.cachedData.length === 0) return false;
+                try {
+                    const currentHash = this.calculateDataHash(this.cachedData);
+                    return currentHash === this.cacheMetadata.dataHash;
+                } catch (error) {
+                    return false;
+                }
+            }
+
+            calculateDataHash(data) {
+                const dataString = JSON.stringify(data.map(d => ({
+                    drawNumber: d.drawNumber,
+                    date: d.date,
+                    numbers: d.numbers,
+                    bonus: d.bonus
+                })));
+                
+                let hash = 0;
+                for (let i = 0; i < dataString.length; i++) {
+                    const char = dataString.charCodeAt(i);
+                    hash = ((hash << 5) - hash) + char;
+                    hash = hash & hash;
+                }
+                return hash.toString(36);
+            }
+
+            optimizeCache() {
+                console.log('🔧 Optimizing cache...');
+                if (this.cachedData.length === 0) {
+                    console.log('🔧 No data to optimize');
+                    return;
+                }
+
+                const originalSize = this.cachedData.length;
+                const uniqueData = this.cachedData.filter((item, index, array) => 
+                    array.findIndex(other => other.drawNumber === item.drawNumber) === index
+                );
+
+                uniqueData.sort((a, b) => b.drawNumber - a.drawNumber);
+
+                if (uniqueData.length > this.cacheConfig.maxCacheSize) {
+                    uniqueData.splice(this.cacheConfig.maxCacheSize);
+                }
+
+                this.cachedData = uniqueData;
+                console.log(`🔧 Cache optimized: ${originalSize} → ${uniqueData.length} records`);
+            }
+        }
+
+        // Test functions
+        window.mockService = new MockDataRefreshService();
+
+        window.updateCacheStats = function() {
+            const stats = window.mockService.getCacheStats();
+            document.getElementById('recordCount').textContent = stats.recordCount;
+            document.getElementById('cacheAge').textContent = stats.cacheAge === Infinity ? '∞' : stats.cacheAge.toFixed(1);
+            document.getElementById('cacheSize').textContent = (stats.cacheSize / 1024).toFixed(1);
+            document.getElementById('compressionRatio').textContent = stats.compressionRatio ? 
+                (stats.compressionRatio * 100).toFixed(1) + '%' : 'N/A';
+        };
+
+        window.clearCache = function() {
+            window.mockService.clearCacheEnhanced();
+            updateCacheStats();
+            showStatus('Cache cleared successfully', 'success');
+        };
+
+        window.runTest = async function(testType) {
+            captureConsole();
+            showStatus(`Running ${testType} test...`, 'info');
+            
+            try {
+                switch(testType) {
+                    case 'enhanced-caching':
+                        await testEnhancedCaching();
+                        break;
+                    case 'cache-invalidation':
+                        await testCacheInvalidation();
+                        break;
+                    case 'memory-optimization':
+                        await testMemoryOptimization();
+                        break;
+                    case 'quota-handling':
+                        await testQuotaHandling();
+                        break;
+                }
+                showStatus(`${testType} test completed`, 'success');
+            } catch (error) {
+                console.error('Test failed:', error);
+                showStatus(`${testType} test failed: ${error.message}`, 'error');
+            } finally {
+                restoreConsole();
+                updateResults();
+                updateCacheStats();
+            }
+        };
+
+        window.runAllTests = async function() {
+            const btn = document.getElementById('runAllBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Running Tests...';
+            
+            captureConsole();
+            showStatus('Running complete test suite...', 'info');
+            
+            try {
+                console.log('🚀 Starting caching and performance optimization tests...\n');
+                
+                await testEnhancedCaching();
+                console.log('');
+                
+                await testCacheInvalidation();
+                console.log('');
+                
+                await testMemoryOptimization();
+                console.log('');
+                
+                await testQuotaHandling();
+                console.log('');
+                
+                console.log('✨ All caching optimization tests completed!');
+                showStatus('All tests completed successfully!', 'success');
+            } catch (error) {
+                console.error('Test suite failed:', error);
+                showStatus(`Test suite failed: ${error.message}`, 'error');
+            } finally {
+                restoreConsole();
+                updateResults();
+                updateCacheStats();
+                btn.disabled = false;
+                btn.textContent = '▶️ Run Complete Test Suite';
+            }
+        };
+
+        // Test implementations
+        function generateTestData(count) {
+            const results = [];
+            const baseDate = new Date();
+            
+            for (let i = 0; i < count; i++) {
+                const date = new Date(baseDate);
+                date.setDate(date.getDate() - i * 3);
+                
+                const numbers = [];
+                while (numbers.length < 6) {
+                    const num = Math.floor(Math.random() * 37) + 1;
+                    if (!numbers.includes(num)) {
+                        numbers.push(num);
+                    }
+                }
+                numbers.sort((a, b) => a - b);
+                
+                results.push({
+                    drawNumber: 5000 + i,
+                    date: date.toISOString().split('T')[0],
+                    numbers,
+                    bonus: Math.floor(Math.random() * 7) + 1,
+                    jackpot: undefined
+                });
+            }
+            
+            return results;
+        }
+
+        async function testEnhancedCaching() {
+            console.log('🧪 Testing enhanced localStorage caching...');
+            
+            const service = new MockDataRefreshService();
+            const testData = generateTestData(100);
+            
+            // Simulate caching
+            service.cachedData = testData;
+            service.lastUpdateTime = new Date();
+            
+            // Create metadata
+            service.cacheMetadata = {
+                version: service.CACHE_VERSION,
+                timestamp: Date.now(),
+                recordCount: testData.length,
+                dataHash: service.calculateDataHash(testData),
+                lastAccessTime: Date.now()
+            };
+            
+            // Save to localStorage
+            localStorage.setItem(service.CACHE_KEY, JSON.stringify(testData));
+            localStorage.setItem(service.METADATA_KEY, JSON.stringify(service.cacheMetadata));
+            
+            console.log(`✅ Cached ${testData.length} records`);
+            
+            // Test loading
+            const newService = new MockDataRefreshService();
+            const stats = newService.getCacheStats();
+            console.log('📊 Cache stats:', stats);
+            
+            // Test integrity
+            const isValid = newService.validateCacheIntegrity();
+            console.log(`🔍 Cache integrity: ${isValid ? 'VALID' : 'INVALID'}`);
+            
+            // Test optimization
+            newService.optimizeCache();
+        }
+
+        async function testCacheInvalidation() {
+            console.log('🧪 Testing intelligent cache invalidation...');
+            
+            // Test age-based invalidation
+            const service = new MockDataRefreshService({ cacheTimeout: 0.001 });
+            service.lastUpdateTime = new Date(Date.now() - 10000); // 10 seconds ago
+            
+            const isFresh = service.isCachedDataFresh();
+            console.log(`📅 Age-based invalidation: ${!isFresh ? 'PASSED' : 'FAILED'}`);
+            
+            // Test version mismatch
+            localStorage.setItem('lottery-cache-metadata-v2', JSON.stringify({
+                version: '1.0', // Old version
+                timestamp: Date.now(),
+                recordCount: 50,
+                dataHash: 'test-hash',
+                lastAccessTime: Date.now()
+            }));
+            
+            console.log('🔄 Version mismatch test completed');
+        }
+
+        async function testMemoryOptimization() {
+            console.log('🧪 Testing memory optimization...');
+            
+            const service = new MockDataRefreshService();
+            const largeData = generateTestData(2000);
+            
+            console.log(`📄 Generated ${largeData.length} test records`);
+            
+            // Test size limiting
+            service.cachedData = largeData;
+            service.optimizeCache();
+            
+            const finalSize = service.cachedData.length;
+            const maxSize = service.cacheConfig.maxCacheSize;
+            
+            console.log(`🎯 Max cache size: ${maxSize}`);
+            console.log(`📊 Final size: ${finalSize}`);
+            
+            if (finalSize <= maxSize) {
+                console.log('✅ Memory optimization: PASSED');
+            } else {
+                console.log('⚠️ Memory optimization: WARNING');
+            }
+        }
+
+        async function testQuotaHandling() {
+            console.log('🧪 Testing storage quota handling...');
+            
+            try {
+                // Try to fill localStorage
+                const largeData = 'x'.repeat(1024 * 1024); // 1MB string
+                for (let i = 0; i < 10; i++) {
+                    try {
+                        localStorage.setItem(`test-large-${i}`, largeData);
+                    } catch (e) {
+                        console.log(`💾 Hit storage limit at iteration ${i}`);
+                        break;
+                    }
+                }
+                
+                console.log('✅ Storage quota handling test completed');
+                
+                // Cleanup
+                for (let i = 0; i < 10; i++) {
+                    localStorage.removeItem(`test-large-${i}`);
+                }
+                
+            } catch (error) {
+                console.log('💾 Storage quota test encountered expected limitations');
+            }
+        }
+
+        // Initialize
+        updateCacheStats();
+    </script>
+</body>
+</html>

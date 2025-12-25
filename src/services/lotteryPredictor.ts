@@ -422,9 +422,13 @@ export class HybridLotteryPredictor {
   private lstmPredictor: LSTMLotteryPredictor;
   private arimaPredictor: ARIMAPredictor | null = null;
   private realDataLoaded = false;
+  private lastUpdateTime: Date;
+  private dataAge: number = 0; // in hours
+  private staleThreshold: number = 24; // hours before data is considered stale
 
   constructor() {
     this.lstmPredictor = new LSTMLotteryPredictor();
+    this.lastUpdateTime = new Date();
     this.initializeARIMA();
   }
 
@@ -463,134 +467,141 @@ export class HybridLotteryPredictor {
 
     // Add a new strategy that learns from recent winning patterns
     const patternBasedNumbers = this.generatePatternBasedPrediction();
+    
+    // Get Hot/Cold numbers
+    const { hot, cold } = this.getHotColdNumbers();
 
-    // Combine all three approaches
-    const combinedNumbers = this.advancedEnsemble(lstmPrediction.numbers, arimaPrediction, patternBasedNumbers);
+    // Combine all approaches
+    const combinedNumbers = this.advancedEnsemble(
+      lstmPrediction.numbers, 
+      arimaPrediction, 
+      patternBasedNumbers,
+      hot,
+      cold
+    );
 
-    // Calculate combined confidence with slight reduction due to recent miss
-    const confidence = Math.min(90, lstmPrediction.confidence);
+    // Calculate combined confidence
+    const confidence = Math.min(95, Math.max(70, lstmPrediction.confidence));
 
     return {
       numbers: combinedNumbers,
       bonus: lstmPrediction.bonus,
       confidence,
-      method: 'Advanced Ensemble (LSTM + ARIMA + Pattern Learning)'
+      method: 'Advanced Ensemble (LSTM + ARIMA + Pattern + Hot/Cold)'
     };
   }
 
-  private ensemblePredictions(lstmNumbers: number[], arimaNumbers: number[]): number[] {
-    // Improved ensemble with better distribution
-    const numbers: number[] = [];
-    const ranges = { low: 0, mid: 0, high: 0 };
-    const maxPerRange = 2; // Ensure good spread
-
-    // Combine all candidates
-    const allCandidates = [...new Set([...lstmNumbers, ...arimaNumbers])];
-
-    // Shuffle for randomness
-    for (let i = allCandidates.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [allCandidates[i], allCandidates[j]] = [allCandidates[j], allCandidates[i]];
+  private getHotColdNumbers(): { hot: number[], cold: number[] } {
+    const historicalData = this.lstmPredictor.getHistoricalData();
+    if (historicalData.length < 10) {
+      return { hot: [], cold: [] };
     }
 
-    // Select numbers ensuring good distribution
-    for (const num of allCandidates) {
-      if (numbers.length >= 6) break;
+    const recentDraws = historicalData.slice(0, 50); // Last 50 draws
+    const frequency = new Map<number, number>();
+    
+    recentDraws.forEach(draw => {
+      draw.numbers.forEach(num => {
+        frequency.set(num, (frequency.get(num) || 0) + 1);
+      });
+    });
 
-      let range: 'low' | 'mid' | 'high';
-      if (num <= 12) range = 'low';
-      else if (num <= 25) range = 'mid';
-      else range = 'high';
-
-      // Add if range not full or if we need to fill remaining slots
-      if (ranges[range] < maxPerRange || numbers.length >= 4) {
-        numbers.push(num);
-        if (ranges[range] < maxPerRange) ranges[range]++;
-      }
-    }
-
-    // Fill remaining slots with random numbers ensuring distribution
-    while (numbers.length < 6) {
-      const num = Math.floor(Math.random() * 37) + 1;
-      if (!numbers.includes(num)) {
-        numbers.push(num);
-      }
-    }
-
-    return numbers.sort((a, b) => a - b);
+    const sorted = Array.from(frequency.entries()).sort((a, b) => b[1] - a[1]);
+    
+    // Top 10 hot numbers
+    const hot = sorted.slice(0, 10).map(e => e[0]);
+    
+    // Cold numbers (least frequent in last 50 draws)
+    const allNumbers = Array.from({length: 37}, (_, i) => i + 1);
+    const cold = allNumbers
+      .map(n => ({ num: n, freq: frequency.get(n) || 0 }))
+      .sort((a, b) => a.freq - b.freq)
+      .slice(0, 10)
+      .map(e => e.num);
+    
+    return { hot, cold };
   }
 
   private generatePatternBasedPrediction(): number[] {
-    // Learn from the recent winning pattern: 36,26,25,18,4,2 (bonus: 5)
-    // This pattern shows: good spread, mix of even/odd, no clustering
-    const numbers: number[] = [];
-    const ranges = { low: 0, mid: 0, high: 0 }; // 1-12, 13-25, 26-37
-    const targetRangeDistribution = [2, 2, 2]; // Aim for 2 numbers per range
-
-    // Generate numbers with similar characteristics to recent winners
-    const recentWinningPattern = [36, 26, 25, 18, 4, 2]; // Learn from this
-
-    // Analyze the winning pattern characteristics
-    const evenCount = recentWinningPattern.filter(n => n % 2 === 0).length; // 4 even
-    const gaps = [];
-    for (let i = 1; i < recentWinningPattern.length; i++) {
-      gaps.push(recentWinningPattern[i] - recentWinningPattern[i - 1]);
+    const historicalData = this.lstmPredictor.getHistoricalData();
+    if (historicalData.length < 10) {
+      // Fallback to random distribution if not enough data
+      return this.generateRandomWithDistribution();
     }
-    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
 
-    // Generate numbers with similar spread characteristics
-    while (numbers.length < 6) {
-      let num: number;
+    // Analyze recent patterns dynamically
+    const recentDraws = historicalData.slice(0, 20);
+    
+    // Calculate average sum and even/odd distribution
+    const sums = recentDraws.map(d => d.numbers.reduce((a, b) => a + b, 0));
+    const avgSum = sums.reduce((a, b) => a + b, 0) / sums.length;
+    
+    const evenCounts = recentDraws.map(d => d.numbers.filter(n => n % 2 === 0).length);
+    const avgEvenCount = Math.round(evenCounts.reduce((a, b) => a + b, 0) / evenCounts.length);
 
-      if (numbers.length === 0) {
-        // First number: prefer low range (like 2, 4)
-        num = Math.floor(Math.random() * 12) + 1;
-      } else if (numbers.length === 1) {
-        // Second number: prefer low-mid range with some gap
-        num = Math.floor(Math.random() * 15) + 8;
-      } else if (numbers.length === 2) {
-        // Third number: mid range
-        num = Math.floor(Math.random() * 10) + 16;
-      } else if (numbers.length === 3) {
-        // Fourth number: mid-high range
-        num = Math.floor(Math.random() * 8) + 22;
-      } else {
-        // Fill remaining with good distribution
-        num = Math.floor(Math.random() * 37) + 1;
+    // Generate numbers matching these stats
+    const numbers: number[] = [];
+    let attempts = 0;
+    
+    // Try to generate a set that matches the pattern
+    while (numbers.length < 6 && attempts < 50) {
+      const candidateSet = this.generateRandomWithDistribution();
+      const setSum = candidateSet.reduce((a, b) => a + b, 0);
+      const setEvenCount = candidateSet.filter(n => n % 2 === 0).length;
+      
+      // Check if matches pattern (within tolerance)
+      if (Math.abs(setSum - avgSum) < 20 && Math.abs(setEvenCount - avgEvenCount) <= 1) {
+        return candidateSet;
       }
+      attempts++;
+    }
+    
+    return this.generateRandomWithDistribution();
+  }
 
-      // Ensure no duplicates and reasonable distribution
+  private generateRandomWithDistribution(): number[] {
+    const numbers: number[] = [];
+    const ranges = { low: 0, mid: 0, high: 0 };
+    
+    while (numbers.length < 6) {
+      const num = Math.floor(Math.random() * 37) + 1;
       if (!numbers.includes(num)) {
         let range: 'low' | 'mid' | 'high';
         if (num <= 12) range = 'low';
         else if (num <= 25) range = 'mid';
         else range = 'high';
-
-        // Add if we haven't exceeded reasonable range limits
+        
         if (ranges[range] < 3) {
           numbers.push(num);
           ranges[range]++;
-        } else if (numbers.length >= 4) {
-          // Force add if we need to complete the set
-          numbers.push(num);
+        } else if (numbers.length >= 5) {
+           numbers.push(num);
         }
       }
     }
-
     return numbers.sort((a, b) => a - b);
   }
 
-  private advancedEnsemble(lstmNumbers: number[], arimaNumbers: number[], patternNumbers: number[]): number[] {
-    // Advanced ensemble combining all three approaches
+  private advancedEnsemble(
+    lstmNumbers: number[], 
+    arimaNumbers: number[], 
+    patternNumbers: number[],
+    hotNumbers: number[],
+    coldNumbers: number[]
+  ): number[] {
+    // Advanced ensemble combining all approaches
     const numbers: number[] = [];
     const ranges = { low: 0, mid: 0, high: 0 };
-    const maxPerRange = 2; // Ensure good spread
+    const maxPerRange = 3; // Allow slightly more per range
 
     // Weight the different approaches
     const allCandidates = [
-      ...lstmNumbers.map(n => ({ num: n, weight: 0.4, source: 'lstm' })),
-      ...arimaNumbers.map(n => ({ num: n, weight: 0.3, source: 'arima' })),
-      ...patternNumbers.map(n => ({ num: n, weight: 0.3, source: 'pattern' }))
+      ...lstmNumbers.map(n => ({ num: n, weight: 0.35, source: 'lstm' })),
+      ...arimaNumbers.map(n => ({ num: n, weight: 0.25, source: 'arima' })),
+      ...patternNumbers.map(n => ({ num: n, weight: 0.25, source: 'pattern' })),
+      ...hotNumbers.map(n => ({ num: n, weight: 0.15, source: 'hot' })),
+      // Cold numbers might be due, give them a small weight
+      ...coldNumbers.map(n => ({ num: n, weight: 0.10, source: 'cold' }))
     ];
 
     // Remove duplicates and sort by combined weight
@@ -610,7 +621,7 @@ export class HybridLotteryPredictor {
     const sortedCandidates = Array.from(uniqueCandidates.entries())
       .map(([num, data]) => ({
         num,
-        score: data.weight + Math.random() * 0.3,
+        score: data.weight + Math.random() * 0.2, // Reduced randomness
         sources: data.sources
       }))
       .sort((a, b) => b.score - a.score);
@@ -627,7 +638,7 @@ export class HybridLotteryPredictor {
       else range = 'high';
 
       // Add if range not full or if we need to fill remaining slots
-      if (ranges[range] < maxPerRange || numbers.length >= 4) {
+      if (ranges[range] < maxPerRange || numbers.length >= 5) {
         numbers.push(num);
         if (ranges[range] < maxPerRange) ranges[range]++;
       }
@@ -646,5 +657,146 @@ export class HybridLotteryPredictor {
 
   public getModelMetrics() {
     return this.lstmPredictor.getModelMetrics();
+  }
+
+  /**
+   * Update the predictor with new historical data
+   * @param newData Array of new lottery draw results
+   */
+  public async updateHistoricalData(newData: LotteryDraw[]): Promise<void> {
+    try {
+      console.log(`🔄 Updating predictor with ${newData.length} new lottery draws`);
+      
+      // Update LSTM predictor's historical data
+      const currentData = this.lstmPredictor.getHistoricalData();
+      
+      // Merge new data with existing data, avoiding duplicates
+      const existingDrawNumbers = new Set(currentData.map(draw => draw.drawNumber));
+      const uniqueNewData = newData.filter(draw => !existingDrawNumbers.has(draw.drawNumber));
+      
+      if (uniqueNewData.length === 0) {
+        console.log('ℹ️ No new unique data to add');
+        return;
+      }
+
+      // Sort all data by draw number to maintain chronological order
+      const allData = [...currentData, ...uniqueNewData].sort((a, b) => a.drawNumber - b.drawNumber);
+      
+      // Update LSTM predictor's internal data
+      (this.lstmPredictor as any).historicalData = allData;
+      
+      // Refresh ARIMA predictor with updated data
+      await this.refreshModels();
+      
+      // Update tracking information
+      this.lastUpdateTime = new Date();
+      this.dataAge = 0;
+      this.realDataLoaded = true;
+      
+      console.log(`✅ Successfully updated predictor with ${uniqueNewData.length} new draws. Total: ${allData.length} draws`);
+    } catch (error) {
+      console.error('❌ Failed to update historical data:', error);
+      throw new Error(`Failed to update predictor data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Refresh the prediction models with current data
+   */
+  public async refreshModels(): Promise<void> {
+    try {
+      console.log('🔄 Refreshing prediction models...');
+      
+      const historicalData = this.lstmPredictor.getHistoricalData();
+      
+      if (historicalData.length === 0) {
+        console.warn('⚠️ No historical data available for model refresh');
+        return;
+      }
+
+      // Reinitialize ARIMA predictor with updated data
+      const historicalNumbers = historicalData.map(draw => draw.numbers);
+      this.arimaPredictor = new ARIMAPredictor(historicalNumbers);
+      
+      // Reset LSTM weights for retraining (simplified approach)
+      (this.lstmPredictor as any).weights = Matrix.random((this.lstmPredictor as any).hiddenSize, 6);
+      (this.lstmPredictor as any).biases = Matrix.random((this.lstmPredictor as any).hiddenSize, 1);
+      
+      console.log('✅ Models refreshed successfully');
+    } catch (error) {
+      console.error('❌ Failed to refresh models:', error);
+      throw new Error(`Failed to refresh models: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Check if the current data is considered stale
+   * @returns true if data is older than the stale threshold
+   */
+  public isDataStale(): boolean {
+    this.updateDataAge();
+    return this.dataAge > this.staleThreshold;
+  }
+
+  /**
+   * Get the last update time
+   * @returns Date when data was last updated
+   */
+  public getLastUpdateTime(): Date {
+    return new Date(this.lastUpdateTime);
+  }
+
+  /**
+   * Get the age of the current data in hours
+   * @returns Age in hours since last update
+   */
+  public getDataAge(): number {
+    this.updateDataAge();
+    return this.dataAge;
+  }
+
+  /**
+   * Set the threshold for considering data stale
+   * @param hours Number of hours after which data is considered stale
+   */
+  public setStaleThreshold(hours: number): void {
+    if (hours <= 0) {
+      throw new Error('Stale threshold must be greater than 0');
+    }
+    this.staleThreshold = hours;
+    console.log(`📅 Stale threshold set to ${hours} hours`);
+  }
+
+  /**
+   * Get information about the current data status
+   * @returns Object containing data status information
+   */
+  public getDataStatus(): {
+    lastUpdate: Date;
+    dataAge: number;
+    isStale: boolean;
+    staleThreshold: number;
+    totalDraws: number;
+    realDataLoaded: boolean;
+  } {
+    this.updateDataAge();
+    
+    return {
+      lastUpdate: this.getLastUpdateTime(),
+      dataAge: this.dataAge,
+      isStale: this.isDataStale(),
+      staleThreshold: this.staleThreshold,
+      totalDraws: this.lstmPredictor.getHistoricalData().length,
+      realDataLoaded: this.realDataLoaded
+    };
+  }
+
+  /**
+   * Update the internal data age calculation
+   */
+  private updateDataAge(): void {
+    const now = new Date();
+    const timeDiff = now.getTime() - this.lastUpdateTime.getTime();
+    this.dataAge = timeDiff / (1000 * 60 * 60); // Convert to hours
   }
 }
