@@ -7,6 +7,8 @@ import NumberBall from './components/NumberBall';
 import LoadingSpinner from './components/LoadingSpinner';
 import CSVUploader from './components/CSVUploader';
 import DataAnalysis from './components/DataAnalysis';
+import LastWinningNumbers from './components/LastWinningNumbers';
+import { IsraeliLotteryResult, IsraeliLotteryAPI } from './services/israeliLotteryAPI';
 import DataStatusNotification, { NotificationType } from './components/DataStatusNotification';
 import { HybridLotteryPredictor } from './services/lotteryPredictor';
 import { DataRefreshService, DataRefreshError, DataRefreshErrorType } from './services/dataRefreshService';
@@ -52,6 +54,7 @@ function App() {
   const [predictor] = useState(() => new HybridLotteryPredictor());
   const [dataRefreshService] = useState(() => new DataRefreshService());
   const [realDataCount, setRealDataCount] = useState(0);
+  const [lastWinningResult, setLastWinningResult] = useState<IsraeliLotteryResult | null>(null);
   const [currentPrediction, setCurrentPrediction] = useState({
     numbers: [0, 0, 0, 0, 0, 0],
     bonus: 0,
@@ -326,6 +329,11 @@ function App() {
 
   // Generate initial prediction using LSTM + ARIMA
   useEffect(() => {
+    // Load last winning numbers on mount
+    IsraeliLotteryAPI.getLatestResult().then(result => {
+      setLastWinningResult(result);
+    });
+
     const timer = setTimeout(() => {
       try {
         const prediction = predictor.generatePrediction();
@@ -886,7 +894,10 @@ function App() {
 
         {/* Charts and Analysis */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
-          <PredictionCard />
+          <div className="space-y-8">
+            <LastWinningNumbers lastResult={lastWinningResult} />
+            <PredictionCard />
+          </div>
           <HistoricalChart />
         </div>
 

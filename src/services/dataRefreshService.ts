@@ -1,5 +1,4 @@
-import { IsraeliLotteryResult } from './israeliLotteryAPI';
-import { DataValidationWarningSystem, DataQualityReport, ValidationWarning } from './dataValidationWarningSystem';
+import { IsraeliLotteryResult, IsraeliLotteryAPI } from './israeliLotteryAPI';
 
 // Error types for better error handling
 export type DataRefreshErrorType = 
@@ -138,6 +137,27 @@ export class DataRefreshService {
       }
 
       // Attempt to download fresh data with enhanced error handling
+      // Start with IsraeliLotteryAPI which handles CORS, Proxy and Merge
+      try {
+        const smartData = await IsraeliLotteryAPI.fetchPaisArchive();
+        if (smartData && smartData.length > 0) {
+             this.cachedData = smartData;
+             this.lastUpdateTime = new Date();
+             this.saveCachedDataEnhanced();
+             return {
+                success: true,
+                data: smartData,
+                fromCache: false,
+                dataAge: 0,
+                recordCount: smartData.length,
+                retryAttempts: 0,
+                fallbackUsed: false
+             };
+        }
+      } catch (e) {
+        console.warn('Smart fetch failed, falling back to legacy download', e);
+      }
+
       const downloadResult = await this.downloadWithEnhancedRetry();
       retryAttempts = downloadResult.retryAttempts || 0;
       

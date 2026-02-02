@@ -11,34 +11,144 @@ export class IsraeliLotteryAPI {
   private static readonly PAIS_BASE_URL = 'https://www.pais.co.il';
   private static readonly LOTTO_ARCHIVE_URL = 'https://www.pais.co.il/lotto/archive.aspx';
   private static readonly CSV_DOWNLOAD_URL = 'https://www.pais.co.il/lotto/archive.aspx#';
-  private static readonly MAX_RETRIES = 3;
-  private static readonly RETRY_DELAY = 1000; // 1 second base delay
+  private static readonly MAX_RETRIES = 2;
+  private static readonly RETRY_DELAY = 1000;
+  private static readonly CACHE_KEY = 'israeli-lottery-data-raw';
+
+  private static readonly CORS_PROXIES = [
+    'https://api.allorigins.win/raw?url=',
+    'https://corsproxy.io/?',
+    'https://api.codetabs.com/v1/proxy?quest='
+  ];
+
+
+  private static activeRequest: Promise<IsraeliLotteryResult[]> | null = null;
+  private static lastNetworkAccess: number = 0;
+  private static readonly MIN_NETWORK_INTERVAL = 5000; // Minimum 5 seconds between network calls
 
   // Method 1: Fetch from Pais.co.il official archive
   static async fetchPaisArchive(limit: number = 100): Promise<IsraeliLotteryResult[]> {
-    try {
-      console.log('Fetching Israeli lottery data from Pais.co.il...');
-
-      // Try to fetch the archive page
-      const response = await fetch(this.LOTTO_ARCHIVE_URL, {
-        mode: 'cors',
-        headers: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'User-Agent': 'Mozilla/5.0 (compatible; LotteryPredictor/1.0)'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const html = await response.text();
-      return this.parsePaisHTML(html, limit);
-
-    } catch (error) {
-      console.warn('Failed to fetch from Pais.co.il, using fallback data:', error);
-      return this.getFallbackData(limit);
+    if (this.activeRequest) {
+      console.log('Using active request for Pais.co.il data');
+      return this.activeRequest;
     }
+
+    // Rate limiting to prevent 408 loops/spam
+    const now = Date.now();
+    if (now - this.lastNetworkAccess < this.MIN_NETWORK_INTERVAL) {
+      console.warn('⚠️ Network request throttled. Returning cached/fallback data.');
+      const cached = this.getCachedData();
+      return cached && cached.length > 0 ? cached : this.getFallbackData(limit);
+    }
+
+    this.activeRequest = (async () => {
+      try {
+        this.lastNetworkAccess = Date.now();
+        console.log('Fetching Israeli lottery data from Pais.co.il...');
+        const cachedData = this.getCachedData();
+        let mergedData: IsraeliLotteryResult[] = cachedData || [];
+
+        // Race condition: Data or Timeout
+        // If we have cached data, we can be more aggressive with timeout (e.g., 5 seconds)
+        // If we don't have data, maybe wait a bit longer or just fail to simulated data.
+        const networkPromise = this.fetchFromNetworkWithProxies(limit, mergedData);
+
+        // If we have plenty of cached data, return it immediately to unblock UI
+        if (mergedData.length > 50) {
+          // Fire and forget update in background
+          networkPromise.catch(e => console.warn('Background update failed:', e));
+          return mergedData;
+        }
+
+        return await networkPromise;
+
+      } catch (error) {
+        console.warn('Major error in fetchPaisArchive:', error);
+        return this.getFallbackData(limit);
+      } finally {
+        this.activeRequest = null;
+      }
+    })();
+
+    return this.activeRequest;
+  }
+
+  private static async fetchFromNetworkWithProxies(limit: number, existingData: IsraeliLotteryResult[]): Promise<IsraeliLotteryResult[]> {
+    let mergedData = [...existingData];
+
+    for (const proxyBase of this.CORS_PROXIES) {
+      try {
+        const targetUrl = `${proxyBase}${encodeURIComponent(this.LOTTO_ARCHIVE_URL)}`;
+        console.log(`Trying proxy: ${proxyBase}...`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 seconds strictly per proxy
+
+        const response = await fetch(targetUrl, {
+          mode: 'cors',
+          signal: controller.signal,
+          headers: {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+          }
+        });
+
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const html = await response.text();
+          const freshData = await this.parsePaisHTML(html, limit);
+
+          if (freshData.length > 0) {
+            mergedData = this.mergeData(mergedData, freshData);
+            this.saveToCache(mergedData);
+            console.log(`✅ Synced with Pais.co.il via ${proxyBase}`);
+            return mergedData;
+          }
+        }
+      } catch (e) {
+        console.warn(`Proxy ${proxyBase} failed:`, e instanceof Error ? e.message : e);
+      }
+    }
+
+    // Network failed?
+    if (mergedData.length > 0) return mergedData;
+
+    // Try to load from "local file" via fetch if in dev environment? 
+    // Usually invalid in browser unless served.
+
+    return this.getFallbackData(limit);
+  }
+
+  /* ... */
+
+  private static getCachedData(): IsraeliLotteryResult[] | null {
+    try {
+      const data = localStorage.getItem(this.CACHE_KEY);
+      if (data) return JSON.parse(data);
+    } catch (e) {
+      console.warn('Failed to read cache', e);
+    }
+    return null;
+  }
+
+  private static saveToCache(data: IsraeliLotteryResult[]) {
+    try {
+      localStorage.setItem(this.CACHE_KEY, JSON.stringify(data));
+    } catch (e) {
+      console.warn('Failed to write cache', e);
+    }
+  }
+
+  private static mergeData(existing: IsraeliLotteryResult[], fresh: IsraeliLotteryResult[]): IsraeliLotteryResult[] {
+    const map = new Map<number, IsraeliLotteryResult>();
+
+    // Add existing
+    existing.forEach(d => map.set(d.drawNumber, d));
+
+    // Add/Overwrite with fresh
+    fresh.forEach(d => map.set(d.drawNumber, d));
+
+    return Array.from(map.values()).sort((a, b) => b.drawNumber - a.drawNumber);
   }
 
   // Method 2: Parse CSV data from Pais.co.il download
@@ -125,25 +235,12 @@ export class IsraeliLotteryAPI {
     });
   }
 
-  // Method 2: Use a lottery API service
+  // Method 2: Use our cache/archive logic instead of external hypothetical API
   static async fetchFromAPI(limit: number = 100): Promise<IsraeliLotteryResult[]> {
-    try {
-      // Example using a hypothetical lottery API
-      const response = await fetch(`https://api.lottery-results.com/israel/lotto?limit=${limit}`);
-      const data = await response.json();
-
-      return data.results.map((result: any) => ({
-        date: result.date,
-        drawNumber: result.draw_number,
-        numbers: result.main_numbers,
-        bonus: result.bonus_number,
-        jackpot: result.jackpot
-      }));
-    } catch (error) {
-      console.error('Failed to fetch from API:', error);
-      return this.getFallbackData(limit);
-    }
+    return this.fetchPaisArchive(limit);
   }
+
+
 
   // Method 3: Load from local CSV file (real Pais.co.il data)
   static async loadFromFile(): Promise<IsraeliLotteryResult[]> {
@@ -184,7 +281,7 @@ export class IsraeliLotteryAPI {
   // NEW: Download latest CSV data from Pais.co.il with retry logic
   static async downloadLatestCSV(): Promise<string> {
     console.log('Downloading latest CSV data from Pais.co.il...');
-    
+
     // Try multiple potential CSV download URLs
     const csvUrls = [
       'https://www.pais.co.il/lotto/archive.aspx?download=csv',
@@ -197,7 +294,7 @@ export class IsraeliLotteryAPI {
       try {
         const response = await this.fetchWithRetry(url, this.MAX_RETRIES);
         const csvContent = await response.text();
-        
+
         // Validate that we got CSV content, not HTML error page
         if (this.validateCSVStructure(csvContent)) {
           console.log(`✅ Successfully downloaded CSV from: ${url}`);
@@ -217,12 +314,12 @@ export class IsraeliLotteryAPI {
 
   // NEW: Robust network request with exponential backoff retry
   static async fetchWithRetry(url: string, maxRetries: number = this.MAX_RETRIES): Promise<Response> {
-    let lastError: Error;
+    let lastError: Error = new Error('Unknown error');
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         console.log(`Attempting to fetch ${url} (attempt ${attempt + 1}/${maxRetries + 1})`);
-        
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
@@ -279,7 +376,7 @@ export class IsraeliLotteryAPI {
       }
 
       const lines = csvContent.split('\n').filter(line => line.trim().length > 0);
-      
+
       if (lines.length < 2) {
         console.error('CSV validation failed: Less than 2 lines (need header + data)');
         return false;
@@ -288,7 +385,7 @@ export class IsraeliLotteryAPI {
       // Check header row for expected columns
       const header = lines[0].toLowerCase();
       const requiredColumns = ['draw', 'date', 'num1', 'num2', 'num3', 'num4', 'num5', 'num6', 'bonus'];
-      const hasRequiredColumns = requiredColumns.some(col => 
+      const hasRequiredColumns = requiredColumns.some(col =>
         header.includes(col) || header.includes(col.replace('num', ''))
       );
 

@@ -1,4 +1,3 @@
-import { Matrix } from 'ml-matrix';
 import * as ss from 'simple-statistics';
 
 // Historical Israeli lottery data structure
@@ -9,24 +8,22 @@ export interface LotteryDraw {
   drawNumber: number;
 }
 
-// LSTM-like prediction using matrix operations
+// Enhanced statistical predictor (formerly LSTM-based)
 export class LSTMLotteryPredictor {
   private historicalData: LotteryDraw[] = [];
-  private sequenceLength = 10;
-  private hiddenSize = 50;
-  private weights: Matrix;
-  private biases: Matrix;
+  
+  // Weights for the hybrid prediction model
+  private readonly WEIGHT_FREQUENCY = 0.4;
+  private readonly WEIGHT_RECENCY = 0.3;
+  private readonly WEIGHT_PATTERN = 0.3;
 
   constructor() {
-    // Initialize weights and biases randomly
-    this.weights = Matrix.random(this.hiddenSize, 6);
-    this.biases = Matrix.random(this.hiddenSize, 1);
     this.initializeWithRealData();
   }
 
   private async initializeWithRealData() {
     await this.loadHistoricalData();
-    console.log(`🎯 LSTM Predictor initialized with ${this.historicalData.length} historical draws`);
+    console.log(`🎯 Predictor initialized with ${this.historicalData.length} historical draws`);
   }
 
   private async loadHistoricalData() {
@@ -34,7 +31,7 @@ export class LSTMLotteryPredictor {
       // Try to load real Israeli lottery data from Pais.co.il
       const { IsraeliLotteryAPI } = await import('./israeliLotteryAPI');
 
-      // First try to fetch from Pais.co.il archive
+      // Fetch from Pais.co.il archive (now handles incremental caching internally)
       let realData = await IsraeliLotteryAPI.fetchPaisArchive(500);
 
       // If that fails, try loading from local file
@@ -49,7 +46,7 @@ export class LSTMLotteryPredictor {
           bonus: result.bonus,
           drawNumber: result.drawNumber
         }));
-        console.log(`✅ Loaded ${this.historicalData.length} real Israeli lottery results from Pais.co.il`);
+        console.log(`✅ Loaded ${this.historicalData.length} real Israeli lottery results`);
         return;
       }
     } catch (error) {
@@ -94,210 +91,144 @@ export class LSTMLotteryPredictor {
     return numbers.sort((a, b) => a - b);
   }
 
-  private preprocessData(): Matrix {
-    // Convert lottery numbers to sequences for LSTM training
-    const sequences: number[][] = [];
-
-    for (let i = this.sequenceLength; i < this.historicalData.length; i++) {
-      const sequence: number[] = [];
-
-      // Create sequence of past draws
-      for (let j = i - this.sequenceLength; j < i; j++) {
-        sequence.push(...this.historicalData[j].numbers);
-      }
-
-      sequences.push(sequence);
-    }
-
-    return new Matrix(sequences);
+  // Calculate frequency score for each number (0-1)
+  private getFrequencyScores(draws: LotteryDraw[]): number[] {
+    const counts = new Array(38).fill(0);
+    draws.forEach(d => d.numbers.forEach(n => counts[n]++));
+    
+    // Normalize
+    const max = Math.max(...counts) || 1;
+    return counts.map(c => c / max);
   }
 
-  private sigmoid(x: number): number {
-    return 1 / (1 + Math.exp(-x));
-  }
+  // Calculate recency score (1 = just seen, 0 = not seen for long time)
+  // But for "due" numbers, we might want the inverse. 
+  // Let's calculate "Due Score" where long absence = high score.
+  private getRecencyScores(draws: LotteryDraw[]): number[] {
+    const lastSeen = new Array(38).fill(-1);
+    // draws are sorted newest first (index 0 is newest) if from API, 
+    // but check loadHistoricalData mapping.
+    // IsraeliLotteryAPI returns newest first.
+    
+    // Iterate backwards to find last index? Or iterate forward?
+    // If draws[0] is newest.
+    draws.forEach((d, drawIndex) => {
+      d.numbers.forEach(n => {
+        if (lastSeen[n] === -1) lastSeen[n] = drawIndex;
+      });
+    });
 
-  private tanh(x: number): number {
-    return Math.tanh(x);
-  }
+    // Score: Normalize to 0-1. Higher score = More Overdue (Less Recent)
+    const scores = new Array(38).fill(0);
+    lastSeen.forEach((lastIndex, num) => {
+       if (num === 0) return; // 0 is not a valid ball
+       if (lastIndex === -1) {
+           scores[num] = 1; // Never seen (in this sample)
+       } else {
+           // If last seen at index 0 (most recent), score is low.
+           // If last seen at index 100, score is high.
+           scores[num] = Math.min(lastIndex / 50, 1); // Cap at 50 draws overdue
+       }
+    });
 
-  private lstmCell(input: Matrix, hiddenState: Matrix, cellState: Matrix): [Matrix, Matrix] {
-    // Simplified LSTM cell implementation
-    const inputSize = input.columns;
-
-    // Forget gate
-    const forgetGate = input.mmul(this.weights.subMatrix(0, 15, 0, inputSize - 1))
-      .add(hiddenState.mmul(this.weights.subMatrix(16, 31, 0, this.hiddenSize - 1)))
-      .add(this.biases.subMatrix(0, 15, 0, 0));
-
-    forgetGate.apply((row, col, value) => this.sigmoid(value));
-
-    // Input gate
-    const inputGate = input.mmul(this.weights.subMatrix(0, 15, 0, inputSize - 1))
-      .add(hiddenState.mmul(this.weights.subMatrix(16, 31, 0, this.hiddenSize - 1)))
-      .add(this.biases.subMatrix(0, 15, 0, 0));
-
-    inputGate.apply((row, col, value) => this.sigmoid(value));
-
-    // New cell state
-    const newCellState = cellState.mul(forgetGate)
-      .add(inputGate.mul(cellState));
-
-    // Output gate
-    const outputGate = input.mmul(this.weights.subMatrix(32, 47, 0, inputSize - 1))
-      .add(hiddenState.mmul(this.weights.subMatrix(16, 31, 0, this.hiddenSize - 1)))
-      .add(this.biases.subMatrix(32, 47, 0, 0));
-
-    outputGate.apply((row, col, value) => this.sigmoid(value));
-
-    // New hidden state
-    const newHiddenState = outputGate.mul(newCellState.clone().apply((row, col, value) => this.tanh(value)));
-
-    return [newHiddenState, newCellState];
+    return scores;
   }
 
   public predict(): { numbers: number[], bonus: number, confidence: number } {
     try {
-      // Get recent sequences
-      const recentData = this.historicalData.slice(-this.sequenceLength);
-      const inputSequence = recentData.flatMap(draw => draw.numbers);
+      if (this.historicalData.length < 20) {
+        return this.fallbackPrediction();
+      }
 
-      // Initialize LSTM states
-      let hiddenState = Matrix.zeros(1, this.hiddenSize);
-      let cellState = Matrix.zeros(1, this.hiddenSize);
+      const recentDraws = this.historicalData.slice(0, 100); // Last 100 draws
+      
+      // Calculate scores
+      const frequencyScores = this.getFrequencyScores(recentDraws);
+      const overdueScores = this.getRecencyScores(recentDraws);
+      
+      // Calculate final weighted probability for each number
+      const probabilities = new Array(38).fill(0).map((_, num) => {
+        if (num === 0) return 0;
+        
+        // We want a mix of Hot (Frequent) and Due (Overdue) numbers
+        // Hot numbers indicate a trend.
+        // Due numbers indicate a statistical correction might be coming (Gambler's fallacy, but common in algorithms).
+        // Let's balance them.
+        
+        const freqScore = frequencyScores[num];
+        const overdueScore = overdueScores[num];
+        
+        // Hybrid score
+        return (freqScore * 0.6) + (overdueScore * 0.4);
+      });
 
-      // Process sequence through LSTM
-      const input = new Matrix([inputSequence.slice(0, 36)]); // 6 numbers * 6 draws
-      [hiddenState, cellState] = this.lstmCell(input, hiddenState, cellState);
+      // Select 6 numbers based on weighted probabilities
+      const predictedNumbers = this.selectWeightedNumbers(probabilities, 6);
+      
+      // Predict bonus (1-7)
+      const bonusCounts = new Array(8).fill(0);
+      recentDraws.forEach(d => bonusCounts[d.bonus]++);
+      // Pick bonus based on frequency (Hot bonus)
+      let bestBonus = 1;
+      let maxBonusCount = -1;
+      for (let i = 1; i <= 7; i++) {
+          if (bonusCounts[i] > maxBonusCount) {
+              maxBonusCount = bonusCounts[i];
+              bestBonus = i;
+          }
+      }
 
-      // Generate predictions from hidden state
-      const predictions = this.generatePredictionsFromState(hiddenState);
-
-      // Calculate confidence based on pattern recognition
-      const confidence = this.calculateConfidence(predictions, recentData);
+      // Calculate confidence
+      // If the top selected numbers have high scores, confidence is high.
+      const avgScore = predictedNumbers
+        .map(n => probabilities[n])
+        .reduce((a, b) => a + b, 0) / 6;
 
       return {
-        numbers: predictions.numbers,
-        bonus: predictions.bonus,
-        confidence: Math.min(95, Math.max(65, confidence))
+        numbers: predictedNumbers.sort((a, b) => a - b),
+        bonus: bestBonus,
+        confidence: Math.min(92, Math.max(65, Math.floor(avgScore * 100) + 50))
       };
     } catch (error) {
-      console.error('LSTM prediction error:', error);
+      console.error('Prediction error:', error);
       return this.fallbackPrediction();
     }
   }
 
-  private generatePredictionsFromState(hiddenState: Matrix): { numbers: number[], bonus: number } {
-    // Convert hidden state to lottery numbers with better distribution
-    const stateValues = hiddenState.to1DArray();
-    const numbers: number[] = [];
+  private selectWeightedNumbers(weights: number[], count: number): number[] {
+    const selected: number[] = [];
+    const pool = [...weights]; // Copy
+    
+    // Zero out index 0
+    pool[0] = 0;
 
-    // Create more balanced probability distribution
-    const numberProbabilities = new Array(37).fill(0).map((_, i) => {
-      const baseProb = 1.0; // Equal base probability for all numbers
-      const stateInfluence = Math.abs(stateValues[i % stateValues.length]) * 0.3; // Reduced state influence
-      const randomFactor = Math.random() * 0.5; // Add randomness
-      return baseProb + stateInfluence + randomFactor;
-    });
-
-    // Ensure good range distribution (low: 1-12, mid: 13-25, high: 26-37)
-    const ranges = { low: 0, mid: 0, high: 0 };
-    const maxPerRange = 3; // Max 3 numbers per range to ensure spread
-
-    // Sort by probability but add more randomness
-    const candidates = numberProbabilities
-      .map((prob, index) => ({ prob: prob + Math.random() * 0.8, num: index + 1 }))
-      .sort((a, b) => b.prob - a.prob);
-
-    // Select numbers ensuring good distribution
-    for (const candidate of candidates) {
-      if (numbers.length >= 6) break;
-
-      const num = candidate.num;
-      let range: 'low' | 'mid' | 'high';
-
-      if (num <= 12) range = 'low';
-      else if (num <= 25) range = 'mid';
-      else range = 'high';
-
-      // Only add if we haven't exceeded range limit and number not already selected
-      if (ranges[range] < maxPerRange && !numbers.includes(num)) {
-        numbers.push(num);
-        ranges[range]++;
-      }
+    for (let i = 0; i < count; i++) {
+        const totalWeight = pool.reduce((a, b) => a + b, 0);
+        let random = Math.random() * totalWeight;
+        
+        for (let num = 1; num <= 37; num++) {
+            if (pool[num] === 0) continue;
+            
+            random -= pool[num];
+            if (random <= 0) {
+                selected.push(num);
+                pool[num] = 0; // Don't select again
+                break;
+            }
+        }
     }
-
-    // Fill remaining slots with completely random numbers if needed
-    while (numbers.length < 6) {
-      const num = Math.floor(Math.random() * 37) + 1;
-      if (!numbers.includes(num)) {
-        numbers.push(num);
-      }
+    
+    // Failsafe if we didn't get enough numbers (e.g. 0 weights)
+    while (selected.length < count) {
+        const num = Math.floor(Math.random() * 37) + 1;
+        if (!selected.includes(num)) selected.push(num);
     }
-
-    // Generate bonus with more randomness
-    const bonus = Math.floor(Math.random() * 7) + 1;
-
-    return {
-      numbers: numbers.sort((a, b) => a - b),
-      bonus: bonus
-    };
+    return selected;
   }
 
-  private calculateConfidence(prediction: { numbers: number[], bonus: number }, recentData: LotteryDraw[]): number {
-    let confidence = 70;
 
-    // Analyze patterns in recent data
-    const recentNumbers = recentData.flatMap(draw => draw.numbers);
-    const numberFrequency = new Map<number, number>();
 
-    recentNumbers.forEach(num => {
-      numberFrequency.set(num, (numberFrequency.get(num) || 0) + 1);
-    });
 
-    // Boost confidence for numbers that appear in frequency analysis
-    prediction.numbers.forEach(num => {
-      const freq = numberFrequency.get(num) || 0;
-      if (freq > 0) {
-        confidence += freq * 2;
-      }
-    });
-
-    // Pattern analysis
-    const hasConsecutive = this.hasConsecutiveNumbers(prediction.numbers);
-    const hasEvenOddBalance = this.hasGoodEvenOddBalance(prediction.numbers);
-    const hasRangeDistribution = this.hasGoodRangeDistribution(prediction.numbers);
-
-    if (hasConsecutive) confidence += 5;
-    if (hasEvenOddBalance) confidence += 8;
-    if (hasRangeDistribution) confidence += 7;
-
-    return confidence;
-  }
-
-  private hasConsecutiveNumbers(numbers: number[]): boolean {
-    for (let i = 0; i < numbers.length - 1; i++) {
-      if (numbers[i + 1] - numbers[i] === 1) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private hasGoodEvenOddBalance(numbers: number[]): boolean {
-    const evenCount = numbers.filter(n => n % 2 === 0).length;
-    return evenCount >= 2 && evenCount <= 4;
-  }
-
-  private hasGoodRangeDistribution(numbers: number[]): boolean {
-    const ranges = [0, 0, 0]; // 1-12, 13-24, 25-37
-    numbers.forEach(num => {
-      if (num <= 12) ranges[0]++;
-      else if (num <= 24) ranges[1]++;
-      else ranges[2]++;
-    });
-
-    return ranges.every(count => count >= 1);
-  }
 
   private fallbackPrediction(): { numbers: number[], bonus: number, confidence: number } {
     // Improved fallback with better distribution
@@ -562,8 +493,10 @@ export class HybridLotteryPredictor {
   private generateRandomWithDistribution(): number[] {
     const numbers: number[] = [];
     const ranges = { low: 0, mid: 0, high: 0 };
+    let safetyCounter = 0;
     
-    while (numbers.length < 6) {
+    while (numbers.length < 6 && safetyCounter < 200) {
+      safetyCounter++;
       const num = Math.floor(Math.random() * 37) + 1;
       if (!numbers.includes(num)) {
         let range: 'low' | 'mid' | 'high';
@@ -579,6 +512,13 @@ export class HybridLotteryPredictor {
         }
       }
     }
+    
+    // Fill if simulation failed
+    while (numbers.length < 6) {
+        let n = Math.floor(Math.random() * 37) + 1;
+        if (!numbers.includes(n)) numbers.push(n);
+    }
+
     return numbers.sort((a, b) => a - b);
   }
 
@@ -645,11 +585,22 @@ export class HybridLotteryPredictor {
     }
 
     // Fill remaining slots with completely random numbers if needed
-    while (numbers.length < 6) {
+    let remainingSafety = 0;
+    while (numbers.length < 6 && remainingSafety < 100) {
+      remainingSafety++;
       const num = Math.floor(Math.random() * 37) + 1;
       if (!numbers.includes(num)) {
         numbers.push(num);
       }
+    }
+
+    // Hard fallback if loop failed to fill
+    if (numbers.length < 6) {
+        // Just fill sequence
+        for(let i=1; i<=37; i++) {
+            if(!numbers.includes(i)) numbers.push(i);
+            if(numbers.length >= 6) break;
+        }
     }
 
     return numbers.sort((a, b) => a - b);
