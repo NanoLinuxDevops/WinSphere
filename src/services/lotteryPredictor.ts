@@ -165,17 +165,19 @@ export class LSTMLotteryPredictor {
       // Select 6 numbers based on weighted probabilities
       const predictedNumbers = this.selectWeightedNumbers(probabilities, 6);
       
-      // Predict bonus (1-7)
+      // Predict bonus (1-7) using weighted random selection (favours frequent values
+      // but still varies on every call so the UI actually updates)
       const bonusCounts = new Array(8).fill(0);
       recentDraws.forEach(d => bonusCounts[d.bonus]++);
-      // Pick bonus based on frequency (Hot bonus)
+      const totalBonusDraws = bonusCounts.reduce((a, b) => a + b, 0) || 1;
+      // Build cumulative weights; add a small floor so every number has a chance
+      const bonusWeights = Array.from({ length: 7 }, (_, i) => bonusCounts[i + 1] / totalBonusDraws + 0.05);
+      const bonusTotal = bonusWeights.reduce((a, b) => a + b, 0);
+      let rnd = Math.random() * bonusTotal;
       let bestBonus = 1;
-      let maxBonusCount = -1;
-      for (let i = 1; i <= 7; i++) {
-          if (bonusCounts[i] > maxBonusCount) {
-              maxBonusCount = bonusCounts[i];
-              bestBonus = i;
-          }
+      for (let i = 0; i < 7; i++) {
+        rnd -= bonusWeights[i];
+        if (rnd <= 0) { bestBonus = i + 1; break; }
       }
 
       // Calculate confidence

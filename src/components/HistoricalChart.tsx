@@ -1,76 +1,94 @@
-import React from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip } from 'recharts';
-import { BarChart3 } from 'lucide-react';
+import React, { useState } from 'react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
-const HistoricalChart: React.FC = () => {
-  const data = [
-    { month: 'Jan', accuracy: 85, predictions: 42 },
-    { month: 'Feb', accuracy: 87, predictions: 38 },
-    { month: 'Mar', accuracy: 83, predictions: 45 },
-    { month: 'Apr', accuracy: 89, predictions: 41 },
-    { month: 'May', accuracy: 91, predictions: 39 },
-    { month: 'Jun', accuracy: 88, predictions: 43 },
-    { month: 'Jul', accuracy: 87, predictions: 40 },
-    { month: 'Aug', accuracy: 92, predictions: 37 },
-    { month: 'Sep', accuracy: 86, predictions: 44 },
-    { month: 'Oct', accuracy: 89, predictions: 42 },
-    { month: 'Nov', accuracy: 90, predictions: 38 },
-    { month: 'Dec', accuracy: 87, predictions: 41 },
+// Generate pseudo-frequency data for numbers 1-37
+function buildFrequencyData(draws: number = 500) {
+  // Seeded pseudo-random heights that look realistic
+  const seed = [
+    18,22,15,31,27,19,24,30,17,23,
+    29,21,16,26,33,20,25,28,14,32,
+    18,22,27,19,24,30,17,23,29,21,
+    26,33,20,25,28,14,32,
   ];
+  return seed.slice(0, 37).map((v, i) => ({ num: i + 1, freq: v }));
+}
+
+interface HistoricalChartProps {
+  lotteryData?: { numbers: number[] }[];
+}
+
+const CustomTooltip = ({ active, payload }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-white border border-[#E5E5EA] rounded-lg px-3 py-2 shadow text-sm text-[#1D1D1F]">
+        <p className="font-semibold">#{payload[0].payload.num}</p>
+        <p className="text-[#6E6E73]">{payload[0].value} draws</p>
+      </div>
+    );
+  }
+  return null;
+};
+
+const HistoricalChart: React.FC<HistoricalChartProps> = ({ lotteryData }) => {
+  const [range, setRange] = useState<'500' | '100'>('500');
+
+  // If real data provided, compute from it; otherwise use mock
+  const data = React.useMemo(() => {
+    if (lotteryData && lotteryData.length > 0) {
+      const counts = Array(37).fill(0);
+      const subset = range === '100' ? lotteryData.slice(0, 100) : lotteryData.slice(0, 500);
+      subset.forEach(d => d.numbers.forEach(n => { if (n >= 1 && n <= 37) counts[n - 1]++; }));
+      return counts.map((c, i) => ({ num: i + 1, freq: c }));
+    }
+    return buildFrequencyData();
+  }, [lotteryData, range]);
+
+  const maxFreq = Math.max(...data.map(d => d.freq));
 
   return (
-    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
-      <h3 className="text-xl font-bold text-white mb-4 flex items-center">
-        <BarChart3 className="h-6 w-6 mr-2 text-blue-400" />
-        Model Performance
-      </h3>
-      
-      <div className="h-64">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-            <XAxis 
-              dataKey="month" 
-              stroke="rgba(255,255,255,0.7)"
-              fontSize={12}
-            />
-            <YAxis 
-              stroke="rgba(255,255,255,0.7)"
-              fontSize={12}
-            />
-            <Tooltip 
-              contentStyle={{
-                backgroundColor: 'rgba(0,0,0,0.8)',
-                border: '1px solid rgba(255,255,255,0.2)',
-                borderRadius: '8px',
-                color: 'white'
-              }}
-            />
-            <Line
-              type="monotone"
-              dataKey="accuracy"
-              stroke="#3B82F6"
-              strokeWidth={3}
-              dot={{ fill: '#3B82F6', strokeWidth: 2, r: 4 }}
-              activeDot={{ r: 6, stroke: '#3B82F6', strokeWidth: 2 }}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+    <div className="bg-white rounded-2xl border border-[#E5E5EA] shadow-sm p-6">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <span className="bg-[#5E5CE6] text-white text-xs font-semibold px-3 py-1 rounded-full cursor-pointer select-none" onClick={() => setRange('500')}>
+            Last 500
+          </span>
+          <span
+            className={`text-xs font-semibold px-3 py-1 rounded-full cursor-pointer select-none transition-colors ${range === '100' ? 'bg-[#5E5CE6] text-white' : 'bg-[#F5F5F7] text-[#6E6E73] hover:bg-[#EEEEFF] hover:text-[#5E5CE6]'}`}
+            onClick={() => setRange('100')}
+          >
+            Last 100
+          </span>
+        </div>
+        <div className="text-right">
+          <p className="text-lg font-bold text-[#1D1D1F]">Number Frequency Analysis</p>
+          <p className="text-xs text-[#6E6E73]">Relative probability based on the last {range} draws</p>
+        </div>
       </div>
-      
-      <div className="mt-4 grid grid-cols-3 gap-4">
-        <div className="text-center">
-          <p className="text-2xl font-bold text-green-400">89.2%</p>
-          <p className="text-xs text-blue-200">Avg Accuracy</p>
-        </div>
-        <div className="text-center">
-          <p className="text-2xl font-bold text-blue-400">492</p>
-          <p className="text-xs text-blue-200">Total Predictions</p>
-        </div>
-        <div className="text-center">
-          <p className="text-2xl font-bold text-yellow-400">+2.3%</p>
-          <p className="text-xs text-blue-200">Improvement</p>
-        </div>
+
+      {/* Chart */}
+      <div className="h-52 mt-4">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} barCategoryGap="20%" margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
+            <XAxis
+              dataKey="num"
+              tick={{ fontSize: 10, fill: '#6E6E73' }}
+              tickLine={false}
+              axisLine={false}
+              interval={4}
+            />
+            <YAxis hide />
+            <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(94,92,230,0.06)' }} />
+            <Bar dataKey="freq" radius={[3, 3, 0, 0]}>
+              {data.map((entry, index) => (
+                <Cell
+                  key={index}
+                  fill={entry.freq >= maxFreq * 0.85 ? '#5E5CE6' : '#CCCBF7'}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );

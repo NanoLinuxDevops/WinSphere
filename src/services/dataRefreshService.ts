@@ -1,4 +1,10 @@
 import { IsraeliLotteryResult, IsraeliLotteryAPI } from './israeliLotteryAPI';
+import {
+  syncIfNeeded,
+  getCachedFirestoreData,
+  getFirestoreCacheAgeHours,
+  markSyncComplete,
+} from './firestoreService';
 
 // Error types for better error handling
 export type DataRefreshErrorType = 
@@ -110,6 +116,70 @@ export class DataRefreshService {
       memoryOptimization: true
     };
     this.loadCachedDataEnhanced();
+  }
+
+  /**
+   * Load lottery data from Firestore (with Saturday auto-sync) and populate local cache.
+   * This should be called on app mount BEFORE downloadLatestData to minimise CORS-proxy calls.
+   */
+  public async loadFromFirestore(): Promise<DataRefreshResult> {
+    try {
+      const data = await syncIfNeeded(() => IsraeliLotteryAPI.fetchPaisArchive());
+
+      if (data && data.length > 0) {
+        this.cachedData = data;
+        this.lastUpdateTime = new Date();
+        this.saveCachedDataEnhanced();
+
+        const latestDraw = Math.max(...data.map((r) => r.drawNumber));
+        markSyncComplete(latestDraw);
+
+        return {
+          success: true,
+          data,
+          fromCache: getFirestoreCacheAgeHours() < 24,
+          dataAge: 0,
+          recordCount: data.length,
+          retryAttempts: 0,
+          fallbackUsed: false,
+        };
+      }
+
+      // Firestore returned nothing — fall through to existing download logic
+      return {
+        success: false,
+        error: 'Firestore returned empty data',
+        fromCache: false,
+        dataAge: 0,
+        recordCount: 0,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Firestore sync failed';
+      console.warn('⚠️ Firestore sync failed, will fall back to CORS proxy:', message);
+
+      // Attempt to serve stale Firestore localStorage cache
+      const stale = getCachedFirestoreData();
+      if (stale && stale.length > 0) {
+        this.cachedData = stale;
+        return {
+          success: true,
+          data: stale,
+          fromCache: true,
+          dataAge: getFirestoreCacheAgeHours(),
+          recordCount: stale.length,
+          fallbackUsed: true,
+        };
+      }
+
+      return {
+        success: false,
+        error: message,
+        fromCache: false,
+        dataAge: 0,
+        recordCount: 0,
+        fallbackUsed: true,
+      };
+    }
   }
 
   /**

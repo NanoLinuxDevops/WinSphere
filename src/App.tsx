@@ -12,6 +12,7 @@ import { IsraeliLotteryResult, IsraeliLotteryAPI } from './services/israeliLotte
 import DataStatusNotification, { NotificationType } from './components/DataStatusNotification';
 import { HybridLotteryPredictor } from './services/lotteryPredictor';
 import { DataRefreshService, DataRefreshError, DataRefreshErrorType } from './services/dataRefreshService';
+import { getCachedFirestoreData } from './services/firestoreService';
 
 // Types for data refresh state management
 type DataRefreshStatus = 'idle' | 'downloading' | 'validating' | 'processing' | 'updating' | 'complete' | 'error';
@@ -329,10 +330,19 @@ function App() {
 
   // Generate initial prediction using LSTM + ARIMA
   useEffect(() => {
-    // Load last winning numbers on mount
-    IsraeliLotteryAPI.getLatestResult().then(result => {
-      setLastWinningResult(result);
-    });
+    // Load last winning numbers from Firestore cache (sorted desc, first = newest)
+    const cached = getCachedFirestoreData();
+    if (cached && cached.length > 0) {
+      setLastWinningResult(cached[0]);
+    } else {
+      // Firestore cache not yet populated — will be set after syncIfNeeded completes
+      IsraeliLotteryAPI.getLatestResult().then(result => {
+        // Only use this result if it looks real (not fake fallback draw #5000)
+        if (result && result.drawNumber < 5000) {
+          setLastWinningResult(result);
+        }
+      });
+    }
 
     const timer = setTimeout(() => {
       try {
@@ -380,8 +390,54 @@ function App() {
         console.log('🔄 Data refresh needed, starting refresh process...');
         startDataRefresh('Checking for latest lottery data...');
 
-        // Stage 1: Download latest data
-        updateDownloadProgress(10, 'Connecting to data source...');
+        // Stage 1: Try Firestore first (primary source, minimises CORS-proxy calls)
+        updateDownloadProgress(5, 'Connecting to Firestore...');
+        const firestoreResult = await dataRefreshService.loadFromFirestore();
+
+        if (firestoreResult.success && firestoreResult.data && firestoreResult.data.length > 0) {
+          // Firestore succeeded — use this data directly
+          updateValidationProgress(80, 'Firestore data loaded, updating models...');
+
+          const lotteryDraws = firestoreResult.data.map(result => ({
+            date: result.date,
+            numbers: result.numbers,
+            bonus: result.bonus,
+            drawNumber: result.drawNumber
+          }));
+          await predictor.updateHistoricalData(lotteryDraws);
+
+          const label = firestoreResult.fromCache
+            ? `Using Firestore cache (${Math.round(firestoreResult.dataAge)} hours old, ${firestoreResult.recordCount} records)`
+            : `Firestore synced — ${firestoreResult.recordCount} records`;
+          completeDataRefresh(label);
+
+          setDataCacheState(prev => ({
+            ...prev,
+            lastDataUpdate: new Date(),
+            usingCachedData: firestoreResult.fromCache ?? false,
+            dataAge: firestoreResult.dataAge,
+            cacheWarningShown: false
+          }));
+
+          // Update last winning numbers from Firestore data (sorted desc, index 0 = newest)
+          setLastWinningResult(firestoreResult.data[0]);
+
+          // Skip the CORS-proxy download below
+          const prediction = predictor.generatePrediction();
+          setCurrentPrediction({
+            numbers: prediction.numbers,
+            bonus: prediction.bonus,
+            confidence: Math.round(prediction.confidence * 10) / 10,
+            timestamp: new Date(),
+            method: prediction.method
+          });
+          setIsLoading(false);
+          setTimeout(() => resetDataRefreshState(), 2000);
+          return;
+        }
+
+        // Firestore unavailable — fall back to CORS proxy
+        updateDownloadProgress(10, 'Firestore unavailable, connecting to data source...');
         
         const refreshResult = await dataRefreshService.downloadLatestData();
         
@@ -500,475 +556,106 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-800">
-      <div className="absolute inset-0 bg-[url('data:image/svg+xml,%3Csvg width=%2260%22 height=%2260%22 viewBox=%220 0 60 60%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cg fill=%22none%22 fill-rule=%22evenodd%22%3E%3Cg fill=%22%239C92AC%22 fill-opacity=%220.03%22%3E%3Ccircle cx=%2230%22 cy=%2230%22 r=%2230%22/%3E%3C/g%3E%3C/g%3E%3C/svg%3E')] opacity-20"></div>
-      
-      {/* Header */}
-      <header className="relative z-10 bg-white/10 backdrop-blur-md border-b border-white/20">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div className="bg-gradient-to-r from-blue-500 to-purple-600 p-3 rounded-xl">
-                <Brain className="h-8 w-8 text-white" />
-              </div>
-              <div>
-                <h1 className="text-3xl font-bold text-white">Mifal HaPayis</h1>
-                <p className="text-blue-200">LSTM Lottery Predictor</p>
-              </div>
-            </div>
-            <div className="flex items-center space-x-4">
-              <div className="text-right">
-                <p className="text-sm text-blue-200">Next Draw</p>
-                <p className="text-lg font-semibold text-white">Tonight 22:00</p>
-              </div>
-              <Calendar className="h-6 w-6 text-blue-300" />
+    <div className="min-h-screen bg-[#F5F5F7]">
+
+      {/* ── Nav ── */}
+      <header className="bg-white/80 backdrop-blur-md border-b border-[#E5E5EA] sticky top-0 z-40">
+        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
+
+          {/* Left: actions */}
+          <div className="flex items-center gap-3">
+            {/* User icon */}
+            <button className="w-8 h-8 rounded-full flex items-center justify-center text-[#6E6E73] hover:bg-[#F5F5F7] transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <circle cx="12" cy="8" r="4" /><path strokeLinecap="round" d="M4 20c0-4 3.582-7 8-7s8 3 8 7" />
+              </svg>
+            </button>
+            {/* Bell */}
+            <button className="w-8 h-8 rounded-full flex items-center justify-center text-[#6E6E73] hover:bg-[#F5F5F7] transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" d="M15 17H9m6 0a3 3 0 01-6 0m6 0H5.6a1 1 0 01-.7-1.7L6 14.3V10a6 6 0 1112 0v4.3l1.1 1 A1 1 0 0118.4 17H15z" />
+              </svg>
+            </button>
+
+            {/* Refresh button */}
+            <button
+              onClick={regeneratePrediction}
+              disabled={dataRefreshState.isRefreshingData || isLoading}
+              className="flex items-center gap-1.5 bg-[#5E5CE6] hover:bg-[#4B49C8] disabled:opacity-60 text-white text-sm font-semibold px-4 py-1.5 rounded-full transition-colors duration-200"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${dataRefreshState.isRefreshingData ? 'animate-spin' : ''}`} />
+              Refresh Data
+            </button>
+
+            {/* Live badge */}
+            <div className="flex items-center gap-1.5 border border-[#FF3B30]/30 text-[#FF3B30] text-xs font-semibold px-3 py-1 rounded-full bg-[#FF3B30]/5">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#FF3B30] animate-pulse" />
+              Draw #{lastWinningResult?.drawNumber ?? '—'} · Live
             </div>
           </div>
+
+          {/* Right: nav links + brand */}
+          <nav className="flex items-center gap-6">
+            <a href="#" className="text-sm text-[#6E6E73] hover:text-[#1D1D1F] transition-colors">History</a>
+            <a href="#" className="text-sm text-[#6E6E73] hover:text-[#1D1D1F] transition-colors">Analytics</a>
+            <a href="#" className="text-sm font-semibold text-[#5E5CE6] border-b-2 border-[#5E5CE6] pb-0.5">Dashboard</a>
+            <span className="text-base font-bold text-[#1D1D1F] ml-2">WinSphere</span>
+          </nav>
         </div>
       </header>
 
-      <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Enhanced Data Status Display */}
-        <div className="mb-6 space-y-3">
-          {/* Main Data Status Indicator */}
-          {(dataCacheState.usingCachedData || dataCacheState.dataAge !== undefined || dataCacheState.lastDataUpdate) && (
-            <div className="flex justify-center">
-              <div className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-medium ${
-                dataCacheState.usingCachedData 
-                  ? 'bg-yellow-500/20 border border-yellow-500/30 text-yellow-200'
-                  : dataCacheState.dataAge && dataCacheState.dataAge > 12
-                  ? 'bg-orange-500/20 border border-orange-500/30 text-orange-200'
-                  : 'bg-green-500/20 border border-green-500/30 text-green-200'
-              }`}>
-                <div className={`w-2 h-2 rounded-full mr-2 ${
-                  dataCacheState.usingCachedData 
-                    ? 'bg-yellow-400'
-                    : dataCacheState.dataAge && dataCacheState.dataAge > 12
-                    ? 'bg-orange-400'
-                    : 'bg-green-400'
-                }`}></div>
-                {dataCacheState.usingCachedData 
-                  ? `Using cached data (${dataCacheState.dataAge ? Math.round(dataCacheState.dataAge) : '?'} hours old)`
-                  : dataCacheState.dataAge !== undefined
-                  ? `Data updated ${Math.round(dataCacheState.dataAge)} hours ago`
-                  : 'Data status unknown'
-                }
-              </div>
-            </div>
-          )}
+      {/* ── Main content ── */}
+      <main className="max-w-5xl mx-auto px-6 py-8 space-y-6">
 
-          {/* Detailed Data Age and Timestamp Display */}
-          {dataCacheState.lastDataUpdate && (
-            <div className="flex justify-center">
-              <div className="bg-white/5 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/10">
-                <div className="flex items-center space-x-4 text-xs">
-                  <div className="flex items-center space-x-2">
-                    <Calendar className="h-3 w-3 text-blue-300" />
-                    <span className="text-blue-200">Last Updated:</span>
-                    <span className="text-white font-medium">
-                      {dataCacheState.lastDataUpdate.toLocaleDateString()} at {dataCacheState.lastDataUpdate.toLocaleTimeString()}
-                    </span>
-                  </div>
-                  {dataCacheState.dataAge !== undefined && (
-                    <div className="flex items-center space-x-2">
-                      <Clock className="h-3 w-3 text-blue-300" />
-                      <span className="text-blue-200">Age:</span>
-                      <span className={`font-medium ${
-                        dataCacheState.dataAge > 24 
-                          ? 'text-orange-300' 
-                          : dataCacheState.dataAge > 12 
-                          ? 'text-yellow-300' 
-                          : 'text-green-300'
-                      }`}>
-                        {dataCacheState.dataAge < 1 
-                          ? `${Math.round(dataCacheState.dataAge * 60)} minutes`
-                          : `${Math.round(dataCacheState.dataAge)} hours`
-                        }
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Cached Data Warning Notification */}
-          {dataCacheState.usingCachedData && !dataCacheState.cacheWarningShown && (
-            <div className="flex justify-center">
-              <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 max-w-md">
-                <div className="flex items-start space-x-3">
-                  <AlertCircle className="h-4 w-4 text-yellow-400 mt-0.5 flex-shrink-0" />
-                  <div className="text-sm">
-                    <p className="text-yellow-200 font-medium mb-1">Using Cached Data</p>
-                    <p className="text-yellow-300 text-xs">
-                      Fresh data couldn't be downloaded. Predictions are based on previously cached lottery results.
-                      {dataCacheState.dataAge && dataCacheState.dataAge > 24 && (
-                        <span className="block mt-1 text-yellow-400">
-                          ⚠️ Data is {Math.round(dataCacheState.dataAge)} hours old - consider refreshing manually.
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setDataCacheState(prev => ({ ...prev, cacheWarningShown: true }))}
-                    className="text-yellow-400 hover:text-yellow-300 text-xs"
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Data Refresh Status Badge */}
-          {dataRefreshState.isRefreshingData && (
-            <div className="flex justify-center">
-              <div className="bg-blue-500/20 border border-blue-500/30 rounded-lg px-4 py-2">
-                <div className="flex items-center space-x-3">
-                  <div className="flex items-center space-x-2">
-                    <RefreshCw className="h-4 w-4 text-blue-400 animate-spin" />
-                    <span className="text-blue-200 text-sm font-medium">Refreshing Data</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-blue-300 text-xs">{dataRefreshState.message}</span>
-                    {dataRefreshState.progress > 0 && (
-                      <span className="text-blue-200 text-xs font-medium">
-                        {Math.round(dataRefreshState.progress)}%
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Data Refresh Error Badge */}
-          {dataRefreshState.status === 'error' && dataRefreshState.error && (
-            <div className="flex justify-center">
-              <div className="bg-red-500/20 border border-red-500/30 rounded-lg px-4 py-2 max-w-md">
-                <div className="flex items-start space-x-3">
-                  <AlertCircle className="h-4 w-4 text-red-400 mt-0.5 flex-shrink-0" />
-                  <div className="text-sm">
-                    <p className="text-red-200 font-medium mb-1">Data Refresh Failed</p>
-                    <p className="text-red-300 text-xs">{dataRefreshState.error}</p>
-                    {dataRefreshState.canRetry && (
-                      <button
-                        onClick={handleRetryDataRefresh}
-                        className="mt-2 text-xs bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded"
-                      >
-                        Retry
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+        {/* Section label */}
+        <div className="flex justify-end">
+          <p className="text-sm font-semibold text-[#1D1D1F]">Last Winning Numbers</p>
         </div>
 
-        {/* Hero Section */}
-        <div className="text-center mb-12">
-          <h2 className="text-4xl md:text-5xl font-bold text-white mb-4">
-            AI-Powered Lottery Predictions
-          </h2>
-          <p className="text-xl text-blue-200 mb-8 max-w-3xl mx-auto">
-            Using advanced LSTM neural networks to analyze historical Israeli lottery data 
-            and generate intelligent predictions for Mifal HaPayis
-          </p>
-          
-          {/* Current Prediction */}
-          <div className="bg-white/10 backdrop-blur-md rounded-3xl p-8 mb-8 border border-white/20">
-            <div className="flex items-center justify-center mb-6 relative">
-              <Star className="h-6 w-6 text-yellow-400 mr-2" />
-              <h3 className="text-2xl font-bold text-white">Latest AI Prediction</h3>
-              <Star className="h-6 w-6 text-yellow-400 ml-2" />
-              
-              {/* Prediction Freshness Badge */}
-              {dataCacheState.lastDataUpdate && (
-                <div className="absolute -top-2 -right-2">
-                  <div className={`px-2 py-1 rounded-full text-xs font-medium ${
-                    dataCacheState.usingCachedData
-                      ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
-                      : dataCacheState.dataAge && dataCacheState.dataAge > 12
-                      ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30'
-                      : 'bg-green-500/20 text-green-300 border border-green-500/30'
-                  }`}>
-                    {dataCacheState.usingCachedData 
-                      ? 'Cached' 
-                      : dataCacheState.dataAge && dataCacheState.dataAge < 1 
-                      ? 'Fresh' 
-                      : 'Updated'
-                    }
-                  </div>
-                </div>
-              )}
-            </div>
-            
-            {isLoading ? (
-              <LoadingSpinner 
-                isRefreshingData={dataRefreshState.isRefreshingData}
-                refreshStatus={dataRefreshState.status}
-                progress={dataRefreshState.progress}
-                statusMessage={dataRefreshState.message}
-                error={dataRefreshState.error}
-                errorDetails={dataRefreshState.errorDetails}
-                estimatedTimeRemaining={dataRefreshState.estimatedTimeRemaining}
-                retryAttempts={dataRefreshState.retryAttempts}
-                canRetry={dataRefreshState.canRetry}
-                onRetry={handleRetryDataRefresh}
-              />
-            ) : (
-              <div className="space-y-6">
-                <div className="flex justify-center items-center space-x-3 mb-4">
-                  {currentPrediction.numbers.map((number, index) => (
-                    <NumberBall key={index} number={number} isPrimary={true} />
-                  ))}
-                  <div className="w-px h-12 bg-white/30 mx-4"></div>
-                  <NumberBall number={currentPrediction.bonus} isPrimary={false} />
-                </div>
-                
-                <div className="flex justify-center items-center space-x-8">
-                  <div className="text-center">
-                    <p className="text-sm text-blue-200">Confidence</p>
-                    <p className="text-2xl font-bold text-green-400">{currentPrediction.confidence}%</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-blue-200">Generated</p>
-                    <p className="text-sm text-white">{currentPrediction.timestamp.toLocaleTimeString()}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-blue-200">Data Status</p>
-                    <div className="flex items-center justify-center space-x-1">
-                      <div className={`w-2 h-2 rounded-full ${
-                        dataCacheState.usingCachedData 
-                          ? 'bg-yellow-400'
-                          : dataCacheState.dataAge && dataCacheState.dataAge > 12
-                          ? 'bg-orange-400'
-                          : 'bg-green-400'
-                      }`}></div>
-                      <p className="text-sm text-white">
-                        {dataCacheState.usingCachedData 
-                          ? 'Cached'
-                          : dataCacheState.dataAge && dataCacheState.dataAge < 1 
-                          ? 'Fresh' 
-                          : 'Updated'
-                        }
-                      </p>
-                    </div>
-                  </div>
-                </div>
+        {/* Last Winning Numbers card */}
+        <LastWinningNumbers lastResult={lastWinningResult} />
 
-                {/* Detailed Data Information */}
-                {dataCacheState.lastDataUpdate && (
-                  <div className="mt-4 pt-4 border-t border-white/10">
-                    <div className="flex justify-center items-center space-x-6 text-xs">
-                      <div className="flex items-center space-x-1">
-                        <Calendar className="h-3 w-3 text-blue-300" />
-                        <span className="text-blue-200">Data from:</span>
-                        <span className="text-white">
-                          {dataCacheState.lastDataUpdate.toLocaleDateString()}
-                        </span>
-                      </div>
-                      {dataCacheState.dataAge !== undefined && (
-                        <div className="flex items-center space-x-1">
-                          <Clock className="h-3 w-3 text-blue-300" />
-                          <span className="text-blue-200">Age:</span>
-                          <span className={`${
-                            dataCacheState.dataAge > 24 
-                              ? 'text-orange-300' 
-                              : dataCacheState.dataAge > 12 
-                              ? 'text-yellow-300' 
-                              : 'text-green-300'
-                          }`}>
-                            {dataCacheState.dataAge < 1 
-                              ? `${Math.round(dataCacheState.dataAge * 60)}m`
-                              : `${Math.round(dataCacheState.dataAge)}h`
-                            }
-                          </span>
-                        </div>
-                      )}
-                      {dataCacheState.usingCachedData && (
-                        <div className="flex items-center space-x-1">
-                          <AlertCircle className="h-3 w-3 text-yellow-400" />
-                          <span className="text-yellow-300">Using cached data</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                
-                <button
-                  onClick={regeneratePrediction}
-                  className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-8 py-3 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 flex items-center mx-auto"
-                >
-                  <Zap className="h-5 w-5 mr-2" />
-                  Generate New Prediction
-                </button>
-              </div>
-            )}
+        {/* AI Prediction card */}
+        {isLoading ? (
+          <div className="rounded-2xl border border-[#DDDCF8] bg-[#F0EFFD] p-10 flex justify-center">
+            <LoadingSpinner
+              isRefreshingData={dataRefreshState.isRefreshingData}
+              refreshStatus={dataRefreshState.status}
+              progress={dataRefreshState.progress}
+              statusMessage={dataRefreshState.message}
+              error={dataRefreshState.error}
+              errorDetails={dataRefreshState.errorDetails}
+              estimatedTimeRemaining={dataRefreshState.estimatedTimeRemaining}
+              retryAttempts={dataRefreshState.retryAttempts}
+              canRetry={dataRefreshState.canRetry}
+              onRetry={handleRetryDataRefresh}
+            />
           </div>
-        </div>
+        ) : (
+          <PredictionCard
+            numbers={currentPrediction.numbers}
+            bonus={currentPrediction.bonus}
+            confidence={currentPrediction.confidence}
+            method={currentPrediction.method}
+            isLoading={isLoading}
+            onGenerate={regeneratePrediction}
+          />
+        )}
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
-            <div className="flex items-center justify-between mb-4">
-              <Target className="h-8 w-8 text-green-400" />
-              <span className="text-2xl font-bold text-white">87.3%</span>
-            </div>
-            <h3 className="font-semibold text-white">Accuracy Rate</h3>
-            <p className="text-sm text-blue-200">Last 100 predictions</p>
-          </div>
-          
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
-            <div className="flex items-center justify-between mb-4">
-              <TrendingUp className="h-8 w-8 text-blue-400" />
-              <span className="text-2xl font-bold text-white">3,938</span>
-            </div>
-            <h3 className="font-semibold text-white">Training Data</h3>
-            <p className="text-sm text-blue-200">Historical draws analyzed</p>
-          </div>
-          
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
-            <div className="flex items-center justify-between mb-4">
-              <Brain className="h-8 w-8 text-purple-400" />
-              <span className="text-2xl font-bold text-white">LSTM</span>
-            </div>
-            <h3 className="font-semibold text-white">Neural Network</h3>
-            <p className="text-sm text-blue-200">Deep learning model</p>
-          </div>
-          
-          {/* Data Freshness Status Card */}
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20 relative">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center space-x-2">
-                <Clock className="h-8 w-8 text-blue-400" />
-                <div className={`w-3 h-3 rounded-full ${
-                  dataCacheState.usingCachedData 
-                    ? 'bg-yellow-400 animate-pulse'
-                    : dataCacheState.dataAge && dataCacheState.dataAge > 12
-                    ? 'bg-orange-400'
-                    : 'bg-green-400'
-                }`}></div>
-              </div>
-              <span className="text-2xl font-bold text-white">
-                {dataCacheState.dataAge !== undefined 
-                  ? dataCacheState.dataAge < 1 
-                    ? `${Math.round(dataCacheState.dataAge * 60)}m`
-                    : `${Math.round(dataCacheState.dataAge)}h`
-                  : '?'
-                }
-              </span>
-            </div>
-            <h3 className="font-semibold text-white">Data Age</h3>
-            <p className="text-sm text-blue-200">
-              {dataCacheState.usingCachedData 
-                ? 'Using cached data'
-                : dataCacheState.lastDataUpdate
-                ? 'Last updated'
-                : 'Status unknown'
-              }
-            </p>
-            
-            {/* Refresh indicator */}
-            {dataRefreshState.isRefreshingData && (
-              <div className="absolute top-2 right-2">
-                <RefreshCw className="h-4 w-4 text-blue-400 animate-spin" />
-              </div>
-            )}
-          </div>
-        </div>
+        {/* Model Metrics row */}
+        <ModelMetrics
+          lastUpdated={dataCacheState.lastDataUpdate}
+          dataPoints={realDataCount > 0 ? realDataCount * 6 : undefined}
+        />
 
-        {/* CSV Upload Section */}
-        <div className="mb-12">
-          <CSVUploader onDataLoaded={(count) => {
-            console.log(`Loaded ${count} real lottery results from Pais.co.il`);
-            setRealDataCount(count);
-          }} />
-        </div>
+        {/* Number Frequency chart */}
+        <HistoricalChart />
 
-        {/* Real Data Analysis Section */}
-        <div className="mb-12">
-          <DataAnalysis realDataCount={realDataCount} />
-        </div>
-
-        {/* Charts and Analysis */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
-          <div className="space-y-8">
-            <LastWinningNumbers lastResult={lastWinningResult} />
-            <PredictionCard />
-          </div>
-          <HistoricalChart />
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2">
-            <ModelMetrics />
-          </div>
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
-            <h3 className="text-xl font-bold text-white mb-4 flex items-center">
-              <BarChart3 className="h-6 w-6 mr-2 text-blue-400" />
-              How It Works
-            </h3>
-            <div className="space-y-4">
-              <div className="flex items-start space-x-3">
-                <div className="bg-blue-500/20 rounded-full p-2 mt-1">
-                  <span className="text-blue-400 font-bold text-sm">1</span>
-                </div>
-                <div>
-                  <h4 className="font-semibold text-white">Data Collection</h4>
-                  <p className="text-sm text-blue-200">Analyze historical lottery results from Mifal HaPayis</p>
-                </div>
-              </div>
-              <div className="flex items-start space-x-3">
-                <div className="bg-purple-500/20 rounded-full p-2 mt-1">
-                  <span className="text-purple-400 font-bold text-sm">2</span>
-                </div>
-                <div>
-                  <h4 className="font-semibold text-white">LSTM Training</h4>
-                  <p className="text-sm text-blue-200">Train neural network on patterns and sequences</p>
-                </div>
-              </div>
-              <div className="flex items-start space-x-3">
-                <div className="bg-green-500/20 rounded-full p-2 mt-1">
-                  <span className="text-green-400 font-bold text-sm">3</span>
-                </div>
-                <div>
-                  <h4 className="font-semibold text-white">Prediction</h4>
-                  <p className="text-sm text-blue-200">Generate intelligent number combinations</p>
-                </div>
-              </div>
-              <div className="flex items-start space-x-3">
-                <div className="bg-yellow-500/20 rounded-full p-2 mt-1">
-                  <span className="text-yellow-400 font-bold text-sm">4</span>
-                </div>
-                <div>
-                  <h4 className="font-semibold text-white">Validation</h4>
-                  <p className="text-sm text-blue-200">Continuous model improvement and accuracy tracking</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </main>
 
-      {/* Footer */}
-      <footer className="relative z-10 mt-16 bg-white/5 backdrop-blur-md border-t border-white/20">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="text-center">
-            <p className="text-blue-200 text-sm">
-              © 2024 Israeli Lottery Predictor. This is a demonstration of LSTM neural networks for lottery prediction.
-            </p>
-            <p className="text-blue-300 text-xs mt-2">
-              Gambling responsibly. Past performance does not guarantee future results.
-            </p>
-          </div>
-        </div>
-      </footer>
-
-      {/* Data Status Notifications */}
+      {/* ── Toast notifications ── */}
       {notifications.map((notification, index) => (
-        <div key={notification.id} style={{ top: `${1 + index * 6}rem` }}>
+        <div key={notification.id} style={{ bottom: `${1.5 + index * 4}rem` }} className="fixed left-6 z-50">
           <DataStatusNotification
             type={notification.type}
             title={notification.title}

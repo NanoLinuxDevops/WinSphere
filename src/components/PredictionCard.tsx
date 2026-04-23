@@ -1,56 +1,65 @@
 import React from 'react';
-import { TrendingUp, Calendar } from 'lucide-react';
+import { Zap, Info } from 'lucide-react';
+import NumberBall from './NumberBall';
 
-const PredictionCard: React.FC = () => {
-  const recentPredictions = [
-    { date: '2024-01-15', numbers: [3, 14, 18, 22, 25, 33], bonus: 2, matched: 4 },
-    { date: '2024-01-12', numbers: [8, 12, 26, 27, 34, 38], bonus: 36, matched: 3 },
-    { date: '2024-01-09', numbers: [1, 14, 17, 26, 35, 39], bonus: 28, matched: 5 },
-    { date: '2024-01-06', numbers: [1, 7, 8, 9, 11, 30], bonus: 4, matched: 2 },
-    { date: '2024-01-03', numbers: [5, 13, 19, 24, 31, 37], bonus: 12, matched: 3 },
-  ];
+interface PredictionCardProps {
+  numbers?: number[];
+  bonus?: number;
+  confidence?: number;
+  method?: string;
+  isLoading?: boolean;
+  onGenerate?: () => void;
+}
 
+const PredictionCard: React.FC<PredictionCardProps> = ({
+  numbers = [7, 12, 19, 26, 28, 37],
+  bonus = 3,
+  confidence = 87,
+  method = 'LSTM + ARIMA Ensemble Neural Engine',
+  isLoading = false,
+  onGenerate,
+}) => {
   return (
-    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
-      <h3 className="text-xl font-bold text-white mb-4 flex items-center">
-        <TrendingUp className="h-6 w-6 mr-2 text-green-400" />
-        Recent Predictions
-      </h3>
-      
-      <div className="space-y-4">
-        {recentPredictions.map((prediction, index) => (
-          <div key={index} className="bg-white/5 rounded-xl p-4 border border-white/10">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center text-sm text-blue-200">
-                <Calendar className="h-4 w-4 mr-1" />
-                {prediction.date}
-              </div>
-              <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                prediction.matched >= 4 
-                  ? 'bg-green-500/20 text-green-400' 
-                  : prediction.matched >= 2 
-                  ? 'bg-yellow-500/20 text-yellow-400'
-                  : 'bg-red-500/20 text-red-400'
-              }`}>
-                {prediction.matched} matches
-              </div>
-            </div>
-            
-            <div className="flex items-center space-x-2">
-              {prediction.numbers.map((number, numIndex) => (
-                <div
-                  key={numIndex}
-                  className="w-8 h-8 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center text-white text-sm font-semibold"
-                >
-                  {number}
-                </div>
-              ))}
-              <div className="w-px h-6 bg-white/30 mx-2"></div>
-              <div className="w-8 h-8 bg-gradient-to-br from-yellow-500 to-orange-500 rounded-full flex items-center justify-center text-white text-sm font-semibold">
-                {prediction.bonus}
-              </div>
-            </div>
-          </div>
+    <div className="rounded-2xl border border-[#DDDCF8] bg-[#F0EFFD] p-6">
+      {/* Top row: generate button + title + confidence */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <button
+          onClick={onGenerate}
+          disabled={isLoading}
+          className="flex items-center gap-2 bg-[#1D1D1F] hover:bg-[#3a3a3c] disabled:opacity-60 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors duration-200"
+        >
+          {isLoading ? (
+            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+            </svg>
+          ) : (
+            <Zap className="h-4 w-4" />
+          )}
+          GENERATE NEW PREDICTION
+        </button>
+
+        <div className="flex items-center gap-3 ml-auto">
+          <span className="flex items-center gap-1.5 bg-[#5E5CE6] text-white text-xs font-semibold px-3 py-1.5 rounded-full">
+            <Zap className="h-3 w-3" />
+            Confidence {confidence}%
+          </span>
+          <h2 className="text-2xl font-bold text-[#1D1D1F]">AI Prediction</h2>
+        </div>
+      </div>
+
+      {/* Method label */}
+      <p className="text-[#6E6E73] text-xs flex items-center gap-1 mb-5">
+        Using {method}
+        <Info className="h-3.5 w-3.5 text-[#6E6E73]" />
+      </p>
+
+      {/* Balls */}
+      <div className="bg-white/60 rounded-xl py-5 px-4 flex items-center justify-center gap-2 flex-wrap">
+        <NumberBall number={bonus} type="bonus" size="lg" delay={0} />
+        <span className="text-[#C7C7CC] text-lg font-light mx-1">—</span>
+        {numbers.map((num, i) => (
+          <NumberBall key={i} number={num} type="primary" size="lg" delay={i * 0.06 + 0.1} />
         ))}
       </div>
     </div>
