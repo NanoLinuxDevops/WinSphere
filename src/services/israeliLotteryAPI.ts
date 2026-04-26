@@ -607,8 +607,74 @@ export class IsraeliLotteryAPI {
     return numbers.sort((a, b) => a - b);
   }
 
-  // Get latest result
+  /**
+   * Fetch the latest draw by scraping the pais.co.il homepage HTML.
+   * Tries each CORS proxy in turn and parses the loto_info_num / strong_num divs.
+   * Returns null if all proxies fail.
+   */
+  static async fetchLatestDrawFromHomepage(): Promise<IsraeliLotteryResult | null> {
+    const HOMEPAGE = 'https://www.pais.co.il/lotto/';
+    const HEBREW_MONTHS: Record<string, string> = {
+      'בינואר': '01', 'בפברואר': '02', 'במרץ': '03',  'באפריל': '04',
+      'במאי':   '05', 'ביוני':   '06', 'ביולי':  '07', 'באוגוסט': '08',
+      'בספטמבר':'09', 'באוקטובר':'10', 'בנובמבר': '11', 'בדצמבר':  '12',
+    };
+
+    for (const proxy of this.CORS_PROXIES) {
+      try {
+        const url = `${proxy}${encodeURIComponent(HOMEPAGE)}`;
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 8000);
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(tid);
+        if (!res.ok) continue;
+
+        const html = await res.text();
+
+        // ── draw number ──────────────────────────────────────────────────
+        const drawMatch = html.match(/מס'\s+(\d{4})/);
+        if (!drawMatch) continue;
+        const drawNumber = parseInt(drawMatch[1], 10);
+
+        // ── date ─────────────────────────────────────────────────────────
+        const dateMatch = html.match(/(\d{1,2})\s+(ב[א-ת"]+)\s+(\d{4})/);
+        let isoDate = '';
+        if (dateMatch) {
+          const day = dateMatch[1].padStart(2, '0');
+          const month = HEBREW_MONTHS[dateMatch[2]] ?? '01';
+          isoDate = `${dateMatch[3]}-${month}-${day}`;
+        }
+
+        // ── main numbers ─────────────────────────────────────────────────
+        const numMatches = [...html.matchAll(/loto_info_num[^>]*>[\s\S]*?<div>(\d+)<\/div>/g)];
+        const numbers = numMatches
+          .map(m => parseInt(m[1], 10))
+          .filter(n => n >= 1 && n <= 37)
+          .slice(0, 6);
+
+        // ── strong / bonus number ─────────────────────────────────────────
+        const strongMatch = html.match(/strong_num[\s\S]*?<div>(\d+)<\/div>/);
+        const bonus = strongMatch ? parseInt(strongMatch[1], 10) : 0;
+
+        if (numbers.length === 6 && bonus >= 1 && bonus <= 7) {
+          return {
+            drawNumber,
+            date: isoDate,
+            numbers: numbers.sort((a, b) => a - b),
+            bonus,
+          };
+        }
+      } catch {
+        // try next proxy
+      }
+    }
+    return null;
+  }
+
+  // Get latest result — tries live homepage first, falls back to cached data
   static async getLatestResult(): Promise<IsraeliLotteryResult | null> {
+    const live = await this.fetchLatestDrawFromHomepage();
+    if (live) return live;
     const results = await this.fetchFromAPI(1);
     return results.length > 0 ? results[0] : null;
   }

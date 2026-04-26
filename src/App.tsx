@@ -10,7 +10,7 @@ import DataAnalysis from './components/DataAnalysis';
 import LastWinningNumbers from './components/LastWinningNumbers';
 import { IsraeliLotteryResult, IsraeliLotteryAPI } from './services/israeliLotteryAPI';
 import DataStatusNotification, { NotificationType } from './components/DataStatusNotification';
-import { HybridLotteryPredictor } from './services/lotteryPredictor';
+import { HybridLotteryPredictor, TrainingStatus, BacktestResult } from './services/lotteryPredictor';
 import { DataRefreshService, DataRefreshError, DataRefreshErrorType } from './services/dataRefreshService';
 import { getCachedFirestoreData } from './services/firestoreService';
 
@@ -52,7 +52,11 @@ interface NotificationState {
 
 function App() {
   const [isLoading, setIsLoading] = useState(true);
-  const [predictor] = useState(() => new HybridLotteryPredictor());
+  const [trainingStatus, setTrainingStatus] = useState<TrainingStatus>({
+    isTraining: false, epoch: 0, totalEpochs: 30, loss: 0, valLoss: 0,
+  });
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
+  const [predictor] = useState(() => new HybridLotteryPredictor((s) => setTrainingStatus({ ...s })));
   const [dataRefreshService] = useState(() => new DataRefreshService());
   const [realDataCount, setRealDataCount] = useState(0);
   const [lastWinningResult, setLastWinningResult] = useState<IsraeliLotteryResult | null>(null);
@@ -61,7 +65,7 @@ function App() {
     bonus: 0,
     confidence: 0,
     timestamp: new Date(),
-    method: 'LSTM + ARIMA Ensemble'
+    method: 'Chi-Squared + Co-Occurrence Ensemble'
   });
 
   // Data refresh state management
@@ -328,21 +332,89 @@ function App() {
     return () => clearInterval(interval);
   }, [dataCacheState.lastDataUpdate]);
 
+  // Poll for LSTM backtest result once training completes
+  useEffect(() => {
+    if (trainingStatus.isTraining || backtestResult) return;
+    const bt = predictor.getBacktestResult();
+    if (bt) { setBacktestResult(bt); return; }
+    const id = setInterval(() => {
+      const bt = predictor.getBacktestResult();
+      if (bt) { setBacktestResult(bt); clearInterval(id); }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [trainingStatus.isTraining, predictor, backtestResult]);
+
+  /** Returns true only for draws that are real: valid drawNumber, ≤37 numbers, date not in the future */
+  const isValidDraw = (r: IsraeliLotteryResult): boolean => {
+    if (!r || typeof r.drawNumber !== 'number') return false;
+    if (r.drawNumber < 1 || r.drawNumber >= 5000) return false;          // reject fake fallback draws
+    if (!Array.isArray(r.numbers) || r.numbers.length !== 6) return false;
+    if (r.numbers.some(n => n < 1 || n > 37)) return false;
+    if (typeof r.bonus !== 'number' || r.bonus < 1 || r.bonus > 7) return false;
+    if (r.date) {
+      const d = new Date(r.date);
+      if (!isNaN(d.getTime()) && d.getTime() > Date.now() + 86400_000) return false; // future date
+    }
+    return true;
+  };
+
   // Generate initial prediction using LSTM + ARIMA
   useEffect(() => {
-    // Load last winning numbers from Firestore cache (sorted desc, first = newest)
-    const cached = getCachedFirestoreData();
-    if (cached && cached.length > 0) {
-      setLastWinningResult(cached[0]);
-    } else {
-      // Firestore cache not yet populated — will be set after syncIfNeeded completes
+    // Load last winning numbers — try sources in priority order:
+    // 1. Firestore localStorage cache (fastest, already in memory)
+    // 2. Live homepage scrape
+    // 3. Local bundled CSV/JSON
+    const loadLastResult = async () => {
+      // 1. Firestore cache — filter out stale/future-dated draws
+      const cached = getCachedFirestoreData();
+      if (cached && cached.length > 0) {
+        const valid = cached.filter(isValidDraw).sort((a, b) => b.drawNumber - a.drawNumber);
+        if (valid.length > 0) {
+          setLastWinningResult(valid[0]);
+          // Background: update if live scrape finds a newer draw
+          IsraeliLotteryAPI.fetchLatestDrawFromHomepage().then(live => {
+            if (live && isValidDraw(live) && live.drawNumber > valid[0].drawNumber) {
+              setLastWinningResult(live);
+            }
+          }).catch(() => {});
+          return;
+        }
+      }
+
+      // 2. Live scrape from pais.co.il homepage (freshest, no session needed)
+      try {
+        const live = await IsraeliLotteryAPI.fetchLatestDrawFromHomepage();
+        if (live && isValidDraw(live)) {
+          setLastWinningResult(live);
+          return;
+        }
+      } catch {
+        // fall through
+      }
+
+      // 3. Local bundled CSV (always available offline)
+      try {
+        const localData = await IsraeliLotteryAPI.loadFromFile();
+        if (localData && localData.length > 0) {
+          const valid = localData.filter(isValidDraw).sort((a, b) => b.drawNumber - a.drawNumber);
+          if (valid.length > 0) {
+            setLastWinningResult(valid[0]);
+            return;
+          }
+        }
+      } catch {
+        // fall through
+      }
+
+      // 4. Last resort — full API (CORS proxies, may fail)
       IsraeliLotteryAPI.getLatestResult().then(result => {
-        // Only use this result if it looks real (not fake fallback draw #5000)
-        if (result && result.drawNumber < 5000) {
+        if (result && isValidDraw(result)) {
           setLastWinningResult(result);
         }
-      });
-    }
+      }).catch(() => {});
+    };
+
+    loadLastResult();
 
     const timer = setTimeout(() => {
       try {
@@ -419,8 +491,9 @@ function App() {
             cacheWarningShown: false
           }));
 
-          // Update last winning numbers from Firestore data (sorted desc, index 0 = newest)
-          setLastWinningResult(firestoreResult.data[0]);
+          // Update last winning numbers from Firestore data — sort to guarantee newest first
+          const sortedFirestore = [...firestoreResult.data].sort((a, b) => b.drawNumber - a.drawNumber);
+          setLastWinningResult(sortedFirestore[0]);
 
           // Skip the CORS-proxy download below
           const prediction = predictor.generatePrediction();
@@ -646,6 +719,8 @@ function App() {
         <ModelMetrics
           lastUpdated={dataCacheState.lastDataUpdate}
           dataPoints={realDataCount > 0 ? realDataCount * 6 : undefined}
+          trainingStatus={trainingStatus}
+          backtestResult={backtestResult}
         />
 
         {/* Number Frequency chart */}
