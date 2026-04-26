@@ -124,7 +124,15 @@ export class DataRefreshService {
    */
   public async loadFromFirestore(): Promise<DataRefreshResult> {
     try {
-      const data = await syncIfNeeded(() => IsraeliLotteryAPI.fetchPaisArchive());
+      // Race Firestore sync against a 10-second timeout so a cold/slow Firestore
+      // connection cannot freeze the UI for minutes.
+      const timeoutPromise = new Promise<IsraeliLotteryResult[]>((_, reject) =>
+        setTimeout(() => reject(new Error('Firestore sync timed out after 10 s')), 10_000)
+      );
+      const data = await Promise.race([
+        syncIfNeeded(() => IsraeliLotteryAPI.fetchPaisArchive()),
+        timeoutPromise,
+      ]);
 
       if (data && data.length > 0) {
         this.cachedData = data;

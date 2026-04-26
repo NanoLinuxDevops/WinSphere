@@ -76,14 +76,15 @@ export class IsraeliLotteryAPI {
   private static async fetchFromNetworkWithProxies(limit: number, existingData: IsraeliLotteryResult[]): Promise<IsraeliLotteryResult[]> {
     let mergedData = [...existingData];
 
-    for (const proxyBase of this.CORS_PROXIES) {
+    // Try all proxies in parallel — use the first one that returns valid data.
+    const tryProxy = async (proxyBase: string): Promise<IsraeliLotteryResult[]> => {
+      const targetUrl = `${proxyBase}${encodeURIComponent(this.LOTTO_ARCHIVE_URL)}`;
+      console.log(`Trying proxy: ${proxyBase}...`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 s per proxy
+
       try {
-        const targetUrl = `${proxyBase}${encodeURIComponent(this.LOTTO_ARCHIVE_URL)}`;
-        console.log(`Trying proxy: ${proxyBase}...`);
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 seconds strictly per proxy
-
         const response = await fetch(targetUrl, {
           mode: 'cors',
           signal: controller.signal,
@@ -91,23 +92,30 @@ export class IsraeliLotteryAPI {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
           }
         });
-
         clearTimeout(timeoutId);
 
-        if (response.ok) {
-          const html = await response.text();
-          const freshData = await this.parsePaisHTML(html, limit);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-          if (freshData.length > 0) {
-            mergedData = this.mergeData(mergedData, freshData);
-            this.saveToCache(mergedData);
-            console.log(`✅ Synced with Pais.co.il via ${proxyBase}`);
-            return mergedData;
-          }
-        }
+        const html = await response.text();
+        const freshData = await this.parsePaisHTML(html, limit);
+        if (freshData.length === 0) throw new Error('No data parsed');
+
+        console.log(`✅ Synced with Pais.co.il via ${proxyBase}`);
+        return freshData;
       } catch (e) {
+        clearTimeout(timeoutId);
         console.warn(`Proxy ${proxyBase} failed:`, e instanceof Error ? e.message : e);
+        throw e;
       }
+    };
+
+    try {
+      const freshData = await Promise.any(this.CORS_PROXIES.map((p) => tryProxy(p)));
+      mergedData = this.mergeData(mergedData, freshData);
+      this.saveToCache(mergedData);
+      return mergedData;
+    } catch {
+      console.warn('All proxies failed in parallel.');
     }
 
     // Network failed?
